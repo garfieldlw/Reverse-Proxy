@@ -2,10 +2,8 @@ package proxy
 
 import (
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/garfieldlw/reverse-proxy/internal/backend"
@@ -82,26 +80,7 @@ func (p *RPCProxy) ServeRPC(clientConn net.Conn) {
 	p.logger.Debug("rpc proxy connected", "backend", b.RawURL, "remote_addr", clientConn.RemoteAddr())
 
 	// Bidirectional copy.
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		io.Copy(backendConn, clientConn)
-		if tc, ok := backendConn.(*net.TCPConn); ok {
-			tc.CloseWrite()
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		io.Copy(clientConn, backendConn)
-		if tc, ok := clientConn.(*net.TCPConn); ok {
-			tc.CloseWrite()
-		}
-	}()
-
-	wg.Wait()
+	BidirectionalCopy(clientConn, backendConn)
 
 	p.logger.Info("rpc proxy completed", "backend", b.RawURL, "remote_addr", clientConn.RemoteAddr())
 }
@@ -129,24 +108,5 @@ func (p *RPCProxy) sendRPCError(conn net.Conn, id any, code int, message string)
 	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if _, err := conn.Write(data); err != nil {
 		p.logger.Error("failed to write rpc error response", "error", err)
-	}
-}
-
-// ListenAndServe starts a TCP listener on the given address and accepts
-// connections in a loop, proxying each one via ServeRPC.
-// It returns when the listener is closed.
-func (p *RPCProxy) ListenAndServe(addr string) error {
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			return err
-		}
-		go p.ServeRPC(conn)
 	}
 }

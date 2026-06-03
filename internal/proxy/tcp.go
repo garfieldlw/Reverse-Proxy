@@ -107,6 +107,14 @@ func (p *TCPProxy) ServeTCP(clientConn net.Conn) {
 	defer backendConn.Close()
 
 	// Bidirectional copy.
+	BidirectionalCopy(clientConn, backendConn)
+
+	p.logger.Info("tcp proxy completed", "network", p.dialNetwork, "backend", b.RawURL, "remote_addr", clientConn.RemoteAddr())
+}
+
+// BidirectionalCopy performs bidirectional copy between two connections,
+// signaling EOF via CloseWrite on TCP connections when one direction finishes.
+func BidirectionalCopy(clientConn, backendConn net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -127,25 +135,4 @@ func (p *TCPProxy) ServeTCP(clientConn net.Conn) {
 	}()
 
 	wg.Wait()
-
-	p.logger.Info("tcp proxy completed", "network", p.dialNetwork, "backend", b.RawURL, "remote_addr", clientConn.RemoteAddr())
-}
-
-// ListenAndServe starts a TCP listener on the given address and accepts
-// connections in a loop, proxying each one via ServeTCP.
-// It returns when the listener is closed.
-func (p *TCPProxy) ListenAndServe(addr string) error {
-	listener, err := net.Listen(p.listenNetwork, addr)
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			return err
-		}
-		go p.ServeTCP(conn)
-	}
 }

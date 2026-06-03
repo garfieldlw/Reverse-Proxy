@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 
 	"github.com/garfieldlw/reverse-proxy/internal/backend"
 	"github.com/garfieldlw/reverse-proxy/internal/balancer"
@@ -61,6 +62,7 @@ type GRPCProxy struct {
 	pool     *backend.Pool
 	balancer balancer.Balancer
 	logger   *slog.Logger
+	clients  sync.Map // string -> *grpc.ClientConn
 }
 
 // NewGRPCProxy creates a new gRPC reverse proxy.
@@ -80,6 +82,37 @@ func (p *GRPCProxy) Server() *grpc.Server {
 		grpc.UnknownServiceHandler(p.streamHandler),
 	)
 	return s
+}
+
+// Close closes all cached gRPC client connections.
+func (p *GRPCProxy) Close() {
+	p.clients.Range(func(key, value any) bool {
+		value.(*grpc.ClientConn).Close()
+		return true
+	})
+}
+
+// getClient returns a cached gRPC client connection for the given address,
+// creating one if needed.
+func (p *GRPCProxy) getClient(targetAddr string) (*grpc.ClientConn, error) {
+	if cc, ok := p.clients.Load(targetAddr); ok {
+		return cc.(*grpc.ClientConn), nil
+	}
+
+	cc, err := grpc.NewClient(targetAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	actual, loaded := p.clients.LoadOrStore(targetAddr, cc)
+	if loaded {
+		cc.Close() // another goroutine beat us, close ours
+		return actual.(*grpc.ClientConn), nil
+	}
+
+	return cc, nil
 }
 
 // streamHandler implements grpc.StreamHandler for transparent proxying.
@@ -104,13 +137,10 @@ func (p *GRPCProxy) streamHandler(srv any, stream grpc.ServerStream) error {
 	)
 
 	targetAddr := b.URL.Host
-	cc, err := grpc.NewClient(targetAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	cc, err := p.getClient(targetAddr)
 	if err != nil {
 		return status.Errorf(codes.Unavailable, "dial backend %s failed: %v", b.RawURL, err)
 	}
-	defer cc.Close()
 
 	md, ok := metadata.FromIncomingContext(stream.Context())
 	outCtx := stream.Context()

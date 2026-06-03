@@ -54,14 +54,15 @@ func (p *WSProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b.IncConns()
-
 	clientConn, err := p.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		p.logger.Error("ws upgrade failed", "error", err)
-		b.DecConns()
 		return
 	}
+
+	b.IncConns()
+	defer b.DecConns()
+	defer clientConn.Close()
 
 	// Build backend WebSocket URL.
 	targetURL := buildWSURL(b.URL, r.URL)
@@ -84,10 +85,9 @@ func (p *WSProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	backendConn, _, err := websocket.DefaultDialer.Dial(targetURL, requestHeaders)
 	if err != nil {
 		p.logger.Error("ws dial backend failed", "url", targetURL, "error", err)
-		clientConn.Close()
-		b.DecConns()
 		return
 	}
+	defer backendConn.Close()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -105,10 +105,6 @@ func (p *WSProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	wg.Wait()
-
-	b.DecConns()
-	clientConn.Close()
-	backendConn.Close()
 }
 
 // copyMessages reads messages from src and writes them to dst until an error or close.
@@ -165,5 +161,3 @@ func buildWSURL(backendURL *url.URL, requestURL *url.URL) string {
 	}
 	return u.String()
 }
-
-

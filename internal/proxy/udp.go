@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	defaultUDPDialTimeout    = 10 * time.Second
+	defaultUDPDialTimeout   = 10 * time.Second
 	defaultUDPSessionTimeout = 30 * time.Second
-	udpMaxPacketSize         = 65535
+	udpMaxPacketSize        = 65535
 )
 
 // UDPProxy is a UDP packet proxy with session-based routing.
@@ -26,7 +26,7 @@ type UDPProxy struct {
 	logger         *slog.Logger
 	dialTimeout    time.Duration
 	sessionTimeout time.Duration
-	mu             sync.RWMutex
+	mu             sync.Mutex
 	sessions       map[string]*udpSession // clientAddr key -> session
 }
 
@@ -111,27 +111,25 @@ func (p *UDPProxy) ServePacketConn(ctx context.Context, conn net.PacketConn) err
 func (p *UDPProxy) handlePacket(ctx context.Context, conn net.PacketConn, clientAddr net.Addr, data []byte) {
 	key := clientAddr.String()
 
-	// Look up existing session
-	p.mu.RLock()
+	p.mu.Lock()
 	session, exists := p.sessions[key]
-	p.mu.RUnlock()
-
 	if !exists {
-		// Create new session
+		// Create new session under the write lock to prevent TOCTOU races.
 		healthy := p.pool.GetHealthyBackends()
 		b, err := p.balancer.Select(healthy)
 		if err != nil {
+			p.mu.Unlock()
 			p.logger.Error("no backends available for udp", "client", clientAddr, "error", err)
 			return
 		}
 
 		b.IncConns()
 
-		// Dial backend UDP
 		dialer := net.Dialer{Timeout: p.dialTimeout}
 		backendConn, err := dialer.DialContext(ctx, "udp", b.URL.Host)
 		if err != nil {
 			b.DecConns()
+			p.mu.Unlock()
 			p.logger.Error("udp dial backend failed", "backend", b.RawURL, "error", err)
 			return
 		}
@@ -142,12 +140,13 @@ func (p *UDPProxy) handlePacket(ctx context.Context, conn net.PacketConn, client
 			lastActive:  time.Now(),
 		}
 
-		p.mu.Lock()
 		p.sessions[key] = session
 		p.mu.Unlock()
 
 		// Start goroutine to read responses from backend and send back to client
 		go p.relayFromBackend(conn, clientAddr, session)
+	} else {
+		p.mu.Unlock()
 	}
 
 	// Update last active time
@@ -239,7 +238,7 @@ func (p *UDPProxy) cleanupSessions(ctx context.Context) {
 
 // SessionCount returns the number of active UDP sessions (for testing).
 func (p *UDPProxy) SessionCount() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return len(p.sessions)
 }
