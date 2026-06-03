@@ -4,18 +4,17 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"sync"
 	"sync/atomic"
 
 	"github.com/garfieldlw/reverse-proxy/internal/config"
 )
 
 // Status represents the health status of a backend.
-type Status int
+type Status int32
 
 const (
-	StatusHealthy   Status = iota
-	StatusUnhealthy
+	StatusHealthy   Status = 0
+	StatusUnhealthy Status = 1
 )
 
 // Backend represents a single backend server.
@@ -24,24 +23,19 @@ type Backend struct {
 	RawURL            string
 	Weight            int
 	ActiveConns       atomic.Int64
-	status            Status
+	status            atomic.Int32 // stores Status value
 	consecutiveFails  atomic.Int64
 	consecutivePasses atomic.Int64
-	mu                sync.RWMutex
 }
 
 // IsHealthy returns whether the backend is currently healthy.
 func (b *Backend) IsHealthy() bool {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.status == StatusHealthy
+	return Status(b.status.Load()) == StatusHealthy
 }
 
 // SetStatus sets the backend health status.
 func (b *Backend) SetStatus(s Status) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.status = s
+	b.status.Store(int32(s))
 }
 
 // IncConns increments the active connection count.
@@ -90,20 +84,19 @@ func (b *Backend) GetConsecutivePasses() int64 {
 
 // Pool manages a collection of backends.
 type Pool struct {
-	Name     string
-	Balancer string
-	Backends []*Backend
-	mu       sync.RWMutex
-	logger   *slog.Logger
+	Name      string
+	Balancer  string
+	Backends  []*Backend
+	logger    *slog.Logger
 }
 
 // NewPool creates a new backend pool from config.
 func NewPool(cfg config.BackendPoolConfig, logger *slog.Logger) (*Pool, error) {
 	pool := &Pool{
-		Name:     cfg.Name,
-		Balancer: cfg.Balancer,
-		Backends: make([]*Backend, 0, len(cfg.Backends)),
-		logger:   logger,
+		Name:      cfg.Name,
+		Balancer:  cfg.Balancer,
+		Backends:  make([]*Backend, 0, len(cfg.Backends)),
+		logger:    logger,
 	}
 
 	for _, bc := range cfg.Backends {
@@ -116,8 +109,8 @@ func NewPool(cfg config.BackendPoolConfig, logger *slog.Logger) (*Pool, error) {
 			URL:    u,
 			RawURL: bc.URL,
 			Weight: bc.Weight,
-			status: StatusHealthy,
 		}
+		b.status.Store(int32(StatusHealthy))
 
 		pool.Backends = append(pool.Backends, b)
 	}
@@ -127,9 +120,6 @@ func NewPool(cfg config.BackendPoolConfig, logger *slog.Logger) (*Pool, error) {
 
 // GetHealthyBackends returns a slice of currently healthy backends.
 func (p *Pool) GetHealthyBackends() []*Backend {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	healthy := make([]*Backend, 0, len(p.Backends))
 	for _, b := range p.Backends {
 		if b.IsHealthy() {
@@ -141,9 +131,6 @@ func (p *Pool) GetHealthyBackends() []*Backend {
 
 // GetAllBackends returns all backends in the pool.
 func (p *Pool) GetAllBackends() []*Backend {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	result := make([]*Backend, len(p.Backends))
 	copy(result, p.Backends)
 	return result
@@ -171,16 +158,11 @@ func (p *Pool) MarkBackendHealthy(b *Backend) {
 
 // Size returns the total number of backends in the pool.
 func (p *Pool) Size() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
 	return len(p.Backends)
 }
 
 // HealthyCount returns the number of healthy backends.
 func (p *Pool) HealthyCount() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	count := 0
 	for _, b := range p.Backends {
 		if b.IsHealthy() {
@@ -190,11 +172,16 @@ func (p *Pool) HealthyCount() int {
 	return count
 }
 
+// NewBackendForTest creates a Backend with the given status for testing.
+// Production code should use NewPool which sets status automatically.
+func NewBackendForTest(rawURL string, s Status) *Backend {
+	b := &Backend{RawURL: rawURL}
+	b.status.Store(int32(s))
+	return b
+}
+
 // FindBackendByURL finds a backend by its raw URL string.
 func (p *Pool) FindBackendByURL(rawURL string) *Backend {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	for _, b := range p.Backends {
 		if b.RawURL == rawURL {
 			return b

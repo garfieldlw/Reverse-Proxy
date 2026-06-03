@@ -67,9 +67,9 @@ func TestPoolGetHealthyBackends(t *testing.T) {
 		Name:     "test",
 		Balancer: "round_robin",
 		Backends: []*Backend{
-			{RawURL: "http://a:80", status: StatusHealthy},
-			{RawURL: "http://b:80", status: StatusUnhealthy},
-			{RawURL: "http://c:80", status: StatusHealthy},
+			NewBackendForTest("http://a:80", StatusHealthy),
+			NewBackendForTest("http://b:80", StatusUnhealthy),
+			NewBackendForTest("http://c:80", StatusHealthy),
 		},
 		logger: slog.Default(),
 	}
@@ -91,7 +91,7 @@ func TestPoolMarkBackend(t *testing.T) {
 		Name:     "test",
 		Balancer: "round_robin",
 		Backends: []*Backend{
-			{RawURL: "http://a:80", status: StatusHealthy},
+			NewBackendForTest("http://a:80", StatusHealthy),
 		},
 		logger: slog.Default(),
 	}
@@ -113,7 +113,7 @@ func TestPoolMarkBackend(t *testing.T) {
 }
 
 func TestBackendActiveConns(t *testing.T) {
-	b := &Backend{RawURL: "http://localhost:80", status: StatusHealthy}
+	b := NewBackendForTest("http://localhost:80", StatusHealthy)
 
 	if conns := b.GetActiveConns(); conns != 0 {
 		t.Fatalf("expected 0 active conns, got %d", conns)
@@ -133,7 +133,7 @@ func TestBackendActiveConns(t *testing.T) {
 }
 
 func TestBackendRecordFailureSuccess(t *testing.T) {
-	b := &Backend{RawURL: "http://localhost:80", status: StatusHealthy}
+	b := NewBackendForTest("http://localhost:80", StatusHealthy)
 
 	// Record failures
 	if fails := b.RecordFailure(); fails != 1 {
@@ -174,9 +174,9 @@ func TestPoolConcurrentAccess(t *testing.T) {
 		Name:     "concurrent-test",
 		Balancer: "round_robin",
 		Backends: []*Backend{
-			{RawURL: "http://a:80", status: StatusHealthy},
-			{RawURL: "http://b:80", status: StatusHealthy},
-			{RawURL: "http://c:80", status: StatusHealthy},
+			NewBackendForTest("http://a:80", StatusHealthy),
+			NewBackendForTest("http://b:80", StatusUnhealthy),
+			NewBackendForTest("http://c:80", StatusHealthy),
 		},
 		logger: slog.Default(),
 	}
@@ -247,8 +247,8 @@ func TestPoolFindBackendByURL(t *testing.T) {
 		Name:     "test",
 		Balancer: "round_robin",
 		Backends: []*Backend{
-			{RawURL: "http://a:80", status: StatusHealthy},
-			{RawURL: "http://b:80", status: StatusHealthy},
+			NewBackendForTest("http://a:80", StatusHealthy),
+			NewBackendForTest("http://b:80", StatusHealthy),
 		},
 		logger: slog.Default(),
 	}
@@ -266,9 +266,9 @@ func TestPoolSizeAndHealthyCount(t *testing.T) {
 		Name:     "test",
 		Balancer: "round_robin",
 		Backends: []*Backend{
-			{RawURL: "http://a:80", status: StatusHealthy},
-			{RawURL: "http://b:80", status: StatusUnhealthy},
-			{RawURL: "http://c:80", status: StatusHealthy},
+			NewBackendForTest("http://a:80", StatusHealthy),
+			NewBackendForTest("http://b:80", StatusUnhealthy),
+			NewBackendForTest("http://c:80", StatusHealthy),
 		},
 		logger: slog.Default(),
 	}
@@ -305,7 +305,7 @@ func TestBackendURLParsing(t *testing.T) {
 }
 
 func TestBackendSetStatusDirectly(t *testing.T) {
-	b := &Backend{RawURL: "http://localhost:80", status: StatusHealthy}
+	b := NewBackendForTest("http://localhost:80", StatusHealthy)
 
 	if !b.IsHealthy() {
 		t.Fatal("expected healthy initially")
