@@ -19,6 +19,15 @@ import (
 
 const proxyCodecName = "proxy"
 
+// bufPool reuses []byte buffers across gRPC stream handlers to reduce
+// per-request heap allocations. 4KB initial capacity covers most unary payloads.
+var bufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 4096)
+		return &b
+	},
+}
+
 func init() {
 	encoding.RegisterCodec(&proxyCodec{})
 }
@@ -162,13 +171,17 @@ func (p *GRPCProxy) streamHandler(srv any, stream grpc.ServerStream) error {
 
 	// client → backend
 	go func() {
-		buf := []byte{}
+		bufp := bufPool.Get().(*[]byte)
+		defer func() {
+			*bufp = (*bufp)[:0]
+			bufPool.Put(bufp)
+		}()
 		for {
-			if err := stream.RecvMsg(&buf); err != nil {
+			if err := stream.RecvMsg(bufp); err != nil {
 				clientToBackendErr <- err
 				return
 			}
-			if err := backendStream.SendMsg(buf); err != nil {
+			if err := backendStream.SendMsg(*bufp); err != nil {
 				clientToBackendErr <- err
 				return
 			}
@@ -177,13 +190,17 @@ func (p *GRPCProxy) streamHandler(srv any, stream grpc.ServerStream) error {
 
 	// backend → client
 	go func() {
-		buf := []byte{}
+		bufp := bufPool.Get().(*[]byte)
+		defer func() {
+			*bufp = (*bufp)[:0]
+			bufPool.Put(bufp)
+		}()
 		for {
-			if err := backendStream.RecvMsg(&buf); err != nil {
+			if err := backendStream.RecvMsg(bufp); err != nil {
 				backendToClientErr <- err
 				return
 			}
-			if err := stream.SendMsg(buf); err != nil {
+			if err := stream.SendMsg(*bufp); err != nil {
 				backendToClientErr <- err
 				return
 			}
