@@ -291,8 +291,8 @@ func TestNewServerTCPListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
-	if len(srv.tcpProxies) != 1 {
-		t.Errorf("expected 1 tcp proxy, got %d", len(srv.tcpProxies))
+	if len(srv.streamListeners) != 1 {
+		t.Errorf("expected 1 stream listener, got %d", len(srv.streamListeners))
 	}
 }
 
@@ -575,8 +575,8 @@ func TestNewServerSocketListener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(srv.socketProxies) != 1 {
-		t.Error("expected 1 socket proxy")
+	if len(srv.streamListeners) != 1 {
+		t.Error("expected 1 stream listener")
 	}
 	srv.Shutdown(5 * time.Second)
 }
@@ -609,8 +609,8 @@ func TestNewServerUDPListener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(srv.udpProxies) != 1 {
-		t.Error("expected 1 udp proxy")
+	if len(srv.packetListeners) != 1 {
+		t.Error("expected 1 packet listener")
 	}
 	srv.Shutdown(5 * time.Second)
 }
@@ -643,8 +643,8 @@ func TestNewServerRPCListener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(srv.rpcProxies) != 1 {
-		t.Error("expected 1 rpc proxy")
+	if len(srv.streamListeners) != 1 {
+		t.Error("expected 1 stream listener")
 	}
 	srv.Shutdown(5 * time.Second)
 }

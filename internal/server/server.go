@@ -29,43 +29,30 @@ type Server struct {
 	balancers      map[string]balancer.Balancer
 	limiter        *ratelimit.Limiter
 
-	httpServers   []*http.Server
-	tcpProxies    []*tcpListener
-	grpcServers   []*grpcListener
-	socketProxies []*socketListener
-	udpProxies    []*udpListener
-	rpcProxies    []*rpcListener
+	httpServers      []*http.Server
+	streamListeners  []*streamListener  // TCP, Socket, RPC
+	grpcServers      []*grpcListener    // gRPC
+	packetListeners  []*packetListener  // UDP
 
-	mu sync.Mutex
+	mu        sync.Mutex
 	started   bool
 	startErr  chan error
 	startOnce sync.Once
 }
 
-type tcpListener struct {
-	proxy  *proxy.TCPProxy
+// streamListener holds a TCP/Unix listener with its proxy and lifecycle channels.
+// Used for TCP, Socket, and RPC protocols which share the same accept-loop pattern.
+type streamListener struct {
+	proxy  any // *proxy.TCPProxy or *proxy.RPCProxy
 	addr   string
 	ln     net.Listener
 	done   chan error
+	ctx    context.Context
 	cancel context.CancelFunc
 }
 
-type grpcListener struct {
-	server *grpc.Server
-	ln     net.Listener
-	done   chan error
-	cancel context.CancelFunc
-}
-
-type socketListener struct {
-	proxy  *proxy.TCPProxy
-	addr   string
-	ln     net.Listener
-	done   chan error
-	cancel context.CancelFunc
-}
-
-type udpListener struct {
+// packetListener holds a UDP packet connection with its proxy.
+type packetListener struct {
 	proxy  *proxy.UDPProxy
 	addr   string
 	conn   net.PacketConn
@@ -73,9 +60,9 @@ type udpListener struct {
 	cancel context.CancelFunc
 }
 
-type rpcListener struct {
-	proxy  *proxy.RPCProxy
-	addr   string
+// grpcListener holds a gRPC server with its listener.
+type grpcListener struct {
+	server *grpc.Server
 	ln     net.Listener
 	done   chan error
 	cancel context.CancelFunc
@@ -134,10 +121,10 @@ func NewServer(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	// 6. If no listeners configured but Server.Listen is set, create a default HTTP listener.
 	if len(cfg.Server.Listeners) == 0 && cfg.Server.Listen != "" {
 		defaultLC := config.ListenerConfig{
-			Name:     "default",
-			Protocol: "http",
-			Listen:   cfg.Server.Listen,
-			TLS:      cfg.Server.TLS,
+			Name:       "default",
+			Protocol:   "http",
+			Listen:     cfg.Server.Listen,
+			TLS:        cfg.Server.TLS,
 		}
 		// If there's exactly one pool, use it as the default backend.
 		if len(cfg.BackendPools) == 1 {
@@ -152,10 +139,26 @@ func NewServer(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		}
 	}
 
-	total := len(s.httpServers) + len(s.tcpProxies) + len(s.grpcServers) + len(s.socketProxies) + len(s.udpProxies) + len(s.rpcProxies)
+	total := len(s.httpServers) + len(s.streamListeners) + len(s.grpcServers) + len(s.packetListeners)
 	logger.Info("server initialized", "listeners", total, "pools", len(s.pools))
 
 	return s, nil
+}
+
+// getPoolAndBalancer resolves a backend pool name to its Pool and Balancer.
+func (s *Server) getPoolAndBalancer(poolName, protocol, listenerName string) (*backend.Pool, balancer.Balancer, error) {
+	if poolName == "" {
+		return nil, nil, fmt.Errorf("%s listener %q requires backend_pool", protocol, listenerName)
+	}
+	pool, ok := s.pools[poolName]
+	if !ok {
+		return nil, nil, fmt.Errorf("%s listener references unknown backend pool %q", protocol, poolName)
+	}
+	bal, ok := s.balancers[poolName]
+	if !ok {
+		return nil, nil, fmt.Errorf("no balancer for backend pool %q", poolName)
+	}
+	return pool, bal, nil
 }
 
 // createListener sets up the appropriate proxy and server for a listener config.
@@ -230,18 +233,9 @@ func (s *Server) createHTTPListener(lc config.ListenerConfig) error {
 
 // createTCPListener creates a TCP proxy listener.
 func (s *Server) createTCPListener(lc config.ListenerConfig) error {
-	poolName := lc.BackendPool
-	if poolName == "" {
-		return fmt.Errorf("tcp listener %q requires backend_pool", lc.Name)
-	}
-
-	pool, ok := s.pools[poolName]
-	if !ok {
-		return fmt.Errorf("tcp listener references unknown backend pool %q", poolName)
-	}
-	bal, ok := s.balancers[poolName]
-	if !ok {
-		return fmt.Errorf("no balancer for backend pool %q", poolName)
+	pool, bal, err := s.getPoolAndBalancer(lc.BackendPool, "tcp", lc.Name)
+	if err != nil {
+		return err
 	}
 
 	tcpProxy := proxy.NewTCPProxy(pool, bal, s.logger)
@@ -251,7 +245,7 @@ func (s *Server) createTCPListener(lc config.ListenerConfig) error {
 		return fmt.Errorf("tcp listen on %s: %w", lc.Listen, err)
 	}
 
-	s.tcpProxies = append(s.tcpProxies, &tcpListener{
+	s.streamListeners = append(s.streamListeners, &streamListener{
 		proxy: tcpProxy,
 		addr:  lc.Listen,
 		ln:    ln,
@@ -262,18 +256,9 @@ func (s *Server) createTCPListener(lc config.ListenerConfig) error {
 
 // createGRPCListener creates a gRPC proxy listener.
 func (s *Server) createGRPCListener(lc config.ListenerConfig) error {
-	poolName := lc.BackendPool
-	if poolName == "" {
-		return fmt.Errorf("grpc listener %q requires backend_pool", lc.Name)
-	}
-
-	pool, ok := s.pools[poolName]
-	if !ok {
-		return fmt.Errorf("grpc listener references unknown backend pool %q", poolName)
-	}
-	bal, ok := s.balancers[poolName]
-	if !ok {
-		return fmt.Errorf("no balancer for backend pool %q", poolName)
+	pool, bal, err := s.getPoolAndBalancer(lc.BackendPool, "grpc", lc.Name)
+	if err != nil {
+		return err
 	}
 
 	grpcProxy := proxy.NewGRPCProxy(pool, bal, s.logger)
@@ -305,18 +290,9 @@ func (s *Server) createGRPCListener(lc config.ListenerConfig) error {
 
 // createSocketListener creates a Unix domain socket proxy listener.
 func (s *Server) createSocketListener(lc config.ListenerConfig) error {
-	poolName := lc.BackendPool
-	if poolName == "" {
-		return fmt.Errorf("socket listener %q requires backend_pool", lc.Name)
-	}
-
-	pool, ok := s.pools[poolName]
-	if !ok {
-		return fmt.Errorf("socket listener references unknown backend pool %q", poolName)
-	}
-	bal, ok := s.balancers[poolName]
-	if !ok {
-		return fmt.Errorf("no balancer for backend pool %q", poolName)
+	pool, bal, err := s.getPoolAndBalancer(lc.BackendPool, "socket", lc.Name)
+	if err != nil {
+		return err
 	}
 
 	socketProxy := proxy.NewSocketProxy(pool, bal, s.logger)
@@ -331,7 +307,7 @@ func (s *Server) createSocketListener(lc config.ListenerConfig) error {
 		return fmt.Errorf("socket listen on %s: %w", lc.Listen, err)
 	}
 
-	s.socketProxies = append(s.socketProxies, &socketListener{
+	s.streamListeners = append(s.streamListeners, &streamListener{
 		proxy: socketProxy,
 		addr:  lc.Listen,
 		ln:    ln,
@@ -342,18 +318,9 @@ func (s *Server) createSocketListener(lc config.ListenerConfig) error {
 
 // createUDPListener creates a UDP proxy listener.
 func (s *Server) createUDPListener(lc config.ListenerConfig) error {
-	poolName := lc.BackendPool
-	if poolName == "" {
-		return fmt.Errorf("udp listener %q requires backend_pool", lc.Name)
-	}
-
-	pool, ok := s.pools[poolName]
-	if !ok {
-		return fmt.Errorf("udp listener references unknown backend pool %q", poolName)
-	}
-	bal, ok := s.balancers[poolName]
-	if !ok {
-		return fmt.Errorf("no balancer for backend pool %q", poolName)
+	pool, bal, err := s.getPoolAndBalancer(lc.BackendPool, "udp", lc.Name)
+	if err != nil {
+		return err
 	}
 
 	udpProxy := proxy.NewUDPProxy(pool, bal, s.logger)
@@ -363,7 +330,7 @@ func (s *Server) createUDPListener(lc config.ListenerConfig) error {
 		return fmt.Errorf("udp listen on %s: %w", lc.Listen, err)
 	}
 
-	s.udpProxies = append(s.udpProxies, &udpListener{
+	s.packetListeners = append(s.packetListeners, &packetListener{
 		proxy: udpProxy,
 		addr:  lc.Listen,
 		conn:  conn,
@@ -374,18 +341,9 @@ func (s *Server) createUDPListener(lc config.ListenerConfig) error {
 
 // createRPCListener creates an RPC proxy listener.
 func (s *Server) createRPCListener(lc config.ListenerConfig) error {
-	poolName := lc.BackendPool
-	if poolName == "" {
-		return fmt.Errorf("rpc listener %q requires backend_pool", lc.Name)
-	}
-
-	pool, ok := s.pools[poolName]
-	if !ok {
-		return fmt.Errorf("rpc listener references unknown backend pool %q", poolName)
-	}
-	bal, ok := s.balancers[poolName]
-	if !ok {
-		return fmt.Errorf("no balancer for backend pool %q", poolName)
+	pool, bal, err := s.getPoolAndBalancer(lc.BackendPool, "rpc", lc.Name)
+	if err != nil {
+		return err
 	}
 
 	rpcProxy := proxy.NewRPCProxy(pool, bal, s.logger)
@@ -395,7 +353,7 @@ func (s *Server) createRPCListener(lc config.ListenerConfig) error {
 		return fmt.Errorf("rpc listen on %s: %w", lc.Listen, err)
 	}
 
-	s.rpcProxies = append(s.rpcProxies, &rpcListener{
+	s.streamListeners = append(s.streamListeners, &streamListener{
 		proxy: rpcProxy,
 		addr:  lc.Listen,
 		ln:    ln,
@@ -435,35 +393,13 @@ func (s *Server) Start() error {
 		}()
 	}
 
-	// Start TCP proxies.
-	for _, tl := range s.tcpProxies {
-		tl := tl
+	// Start stream listeners (TCP, Socket, RPC).
+	for _, sl := range s.streamListeners {
+		sl := sl
 		ctx, cancel := context.WithCancel(context.Background())
-		tl.cancel = cancel
-		go func() {
-			s.logger.Info("listener started", "protocol", "tcp", "addr", tl.addr)
-			// Accept connections manually so we can respect context cancellation.
-			for {
-				select {
-				case <-ctx.Done():
-					tl.done <- nil
-					return
-				default:
-				}
-				conn, err := tl.ln.Accept()
-				if err != nil {
-					select {
-					case <-ctx.Done():
-						tl.done <- nil
-						return
-					default:
-						tl.done <- fmt.Errorf("tcp accept %s: %w", tl.addr, err)
-						return
-					}
-				}
-				go tl.proxy.ServeTCP(conn)
-			}
-		}()
+		sl.ctx = ctx
+		sl.cancel = cancel
+		go s.acceptLoop(sl)
 	}
 
 	// Start gRPC servers.
@@ -484,40 +420,8 @@ func (s *Server) Start() error {
 		}()
 	}
 
-	// Start socket proxies.
-	for _, sl := range s.socketProxies {
-		sl := sl
-		ctx, cancel := context.WithCancel(context.Background())
-		sl.cancel = cancel
-		go func() {
-			s.logger.Info("listener started", "protocol", "socket", "addr", sl.addr)
-			for {
-				select {
-				case <-ctx.Done():
-					sl.done <- nil
-					return
-				default:
-				}
-				sl.ln.(*net.UnixListener).SetDeadline(time.Now().Add(1 * time.Second))
-				conn, err := sl.ln.Accept()
-				if err != nil {
-					if ctx.Err() != nil {
-						sl.done <- nil
-						return
-					}
-					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-						continue
-					}
-					sl.done <- fmt.Errorf("socket accept %s: %w", sl.addr, err)
-					return
-				}
-				go sl.proxy.ServeTCP(conn)
-			}
-		}()
-	}
-
 	// Start UDP proxies.
-	for _, ul := range s.udpProxies {
+	for _, ul := range s.packetListeners {
 		ul := ul
 		ctx, cancel := context.WithCancel(context.Background())
 		ul.cancel = cancel
@@ -528,39 +432,60 @@ func (s *Server) Start() error {
 		}()
 	}
 
-	// Start RPC proxies.
-	for _, rl := range s.rpcProxies {
-		rl := rl
-		ctx, cancel := context.WithCancel(context.Background())
-		rl.cancel = cancel
-		go func() {
-			s.logger.Info("listener started", "protocol", "rpc", "addr", rl.addr)
-			for {
-				select {
-				case <-ctx.Done():
-					rl.done <- nil
-					return
-				default:
-				}
-				rl.ln.(*net.TCPListener).SetDeadline(time.Now().Add(1 * time.Second))
-				conn, err := rl.ln.Accept()
-				if err != nil {
-					if ctx.Err() != nil {
-						rl.done <- nil
-						return
-					}
-					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-						continue
-					}
-					rl.done <- fmt.Errorf("rpc accept %s: %w", rl.addr, err)
-					return
-				}
-				go rl.proxy.ServeRPC(conn)
-			}
-		}()
+	return nil
+}
+
+// acceptLoop runs the accept loop for a stream listener, dispatching connections
+// to the appropriate handler based on the proxy type.
+func (s *Server) acceptLoop(sl *streamListener) {
+	protocol := "tcp"
+	switch p := sl.proxy.(type) {
+	case *proxy.RPCProxy:
+		protocol = "rpc"
+	case *proxy.TCPProxy:
+		if p.GetListenNetwork() == "unix" {
+			protocol = "socket"
+		}
 	}
 
-	return nil
+	s.logger.Info("listener started", "protocol", protocol, "addr", sl.addr)
+
+	for {
+		select {
+		case <-sl.ctx.Done():
+			sl.done <- nil
+			return
+		default:
+		}
+
+		// Set deadline for graceful shutdown on socket/rpc listeners.
+		switch protocol {
+		case "socket":
+			sl.ln.(*net.UnixListener).SetDeadline(time.Now().Add(1 * time.Second))
+		case "rpc":
+			sl.ln.(*net.TCPListener).SetDeadline(time.Now().Add(1 * time.Second))
+		}
+
+		conn, err := sl.ln.Accept()
+		if err != nil {
+			if sl.ctx.Err() != nil {
+				sl.done <- nil
+				return
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			sl.done <- fmt.Errorf("%s accept %s: %w", protocol, sl.addr, err)
+			return
+		}
+
+		switch p := sl.proxy.(type) {
+		case *proxy.TCPProxy:
+			go p.ServeTCP(conn)
+		case *proxy.RPCProxy:
+			go p.ServeRPC(conn)
+		}
+	}
 }
 
 // Shutdown performs a graceful shutdown of all listeners within the given timeout.
@@ -610,18 +535,8 @@ func (s *Server) Shutdown(timeout time.Duration) error {
 		}()
 	}
 
-	// 4. Close TCP listeners and cancel their accept loops.
-	for _, tl := range s.tcpProxies {
-		if tl.ln != nil {
-			tl.ln.Close()
-		}
-		if tl.cancel != nil {
-			tl.cancel()
-		}
-	}
-
-	// Close socket listeners.
-	for _, sl := range s.socketProxies {
+	// 4. Close stream listeners and cancel their accept loops.
+	for _, sl := range s.streamListeners {
 		if sl.ln != nil {
 			sl.ln.Close()
 		}
@@ -630,23 +545,13 @@ func (s *Server) Shutdown(timeout time.Duration) error {
 		}
 	}
 
-	// Close UDP listeners.
-	for _, ul := range s.udpProxies {
-		if ul.conn != nil {
-			ul.conn.Close()
+	// Close packet listeners.
+	for _, pl := range s.packetListeners {
+		if pl.conn != nil {
+			pl.conn.Close()
 		}
-		if ul.cancel != nil {
-			ul.cancel()
-		}
-	}
-
-	// Close RPC listeners.
-	for _, rl := range s.rpcProxies {
-		if rl.ln != nil {
-			rl.ln.Close()
-		}
-		if rl.cancel != nil {
-			rl.cancel()
+		if pl.cancel != nil {
+			pl.cancel()
 		}
 	}
 
@@ -654,10 +559,10 @@ func (s *Server) Shutdown(timeout time.Duration) error {
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
-		// Also wait for TCP and gRPC listener goroutines to finish.
-		for _, tl := range s.tcpProxies {
-			if tl.done != nil {
-				<-tl.done
+		// Also wait for stream and gRPC listener goroutines to finish.
+		for _, sl := range s.streamListeners {
+			if sl.done != nil {
+				<-sl.done
 			}
 		}
 		for _, gl := range s.grpcServers {
@@ -665,19 +570,9 @@ func (s *Server) Shutdown(timeout time.Duration) error {
 				<-gl.done
 			}
 		}
-		for _, sl := range s.socketProxies {
-			if sl.done != nil {
-				<-sl.done
-			}
-		}
-		for _, ul := range s.udpProxies {
-			if ul.done != nil {
-				<-ul.done
-			}
-		}
-		for _, rl := range s.rpcProxies {
-			if rl.done != nil {
-				<-rl.done
+		for _, pl := range s.packetListeners {
+			if pl.done != nil {
+				<-pl.done
 			}
 		}
 		close(done)
