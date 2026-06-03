@@ -1,8 +1,8 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,54 +15,35 @@ import (
 	"github.com/garfieldlw/reverse-proxy/internal/middleware/ratelimit"
 )
 
+// contextKey is used for per-request context values in the reverse proxy.
+type contextKey string
+
+const (
+	backendKey   contextKey = "selected_backend"
+	startTimeKey contextKey = "start_time"
+)
+
 // HTTPProxy is an HTTP reverse proxy that load balances across backends.
 type HTTPProxy struct {
-	pool     *backend.Pool
-	balancer balancer.Balancer
-	limiter  *ratelimit.Limiter
-	logger   *slog.Logger
+	pool         *backend.Pool
+	balancer     balancer.Balancer
+	limiter      *ratelimit.Limiter
+	logger       *slog.Logger
+	reverseProxy *httputil.ReverseProxy
 }
 
 // NewHTTPProxy creates a new HTTP reverse proxy handler.
-func NewHTTPProxy(pool *backend.Pool, balancer balancer.Balancer, limiter *ratelimit.Limiter, logger *slog.Logger) *HTTPProxy {
-	return &HTTPProxy{
+func NewHTTPProxy(pool *backend.Pool, bal balancer.Balancer, limiter *ratelimit.Limiter, logger *slog.Logger) *HTTPProxy {
+	p := &HTTPProxy{
 		pool:     pool,
-		balancer: balancer,
+		balancer: bal,
 		limiter:  limiter,
 		logger:   logger,
 	}
-}
 
-// ServeHTTP handles HTTP requests by selecting a healthy backend and proxying.
-func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	healthy := p.pool.GetHealthyBackends()
-	b, err := p.balancer.Select(healthy)
-	if err != nil {
-		if errors.Is(err, balancer.ErrNoBackends) {
-			p.logger.Error("no backends available", "method", r.Method, "path", r.URL.Path)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]string{
-				"error": "no backends available",
-			})
-			return
-		}
-		p.logger.Error("backend selection failed", "error", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "no backends available",
-		})
-		return
-	}
-
-	b.IncConns()
-	defer b.DecConns()
-
-	start := time.Now()
-
-	rp := &httputil.ReverseProxy{
+	p.reverseProxy = &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
+			b := req.Context().Value(backendKey).(*backend.Backend)
 			req.URL.Scheme = b.URL.Scheme
 			req.URL.Host = b.URL.Host
 			req.URL.Path = singleJoiningSlash(b.URL.Path, req.URL.Path)
@@ -71,13 +52,13 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			// Forward original Host as X-Forwarded-Host.
 			if req.Header.Get("X-Forwarded-Host") == "" {
-				req.Header.Set("X-Forwarded-Host", r.Host)
+				req.Header.Set("X-Forwarded-Host", req.Host)
 			}
 
 			// Add X-Forwarded-For with client IP.
-			clientIP, _, ipErr := net.SplitHostPort(r.RemoteAddr)
+			clientIP, _, ipErr := net.SplitHostPort(req.RemoteAddr)
 			if ipErr != nil {
-				clientIP = r.RemoteAddr
+				clientIP = req.RemoteAddr
 			}
 			if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
 				req.Header.Set("X-Forwarded-For", prior+", "+clientIP)
@@ -86,9 +67,11 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			start := resp.Request.Context().Value(startTimeKey).(time.Time)
+			b := resp.Request.Context().Value(backendKey).(*backend.Backend)
 			p.logger.Info("proxy request",
-				"method", r.Method,
-				"path", r.URL.Path,
+				"method", resp.Request.Method,
+				"path", resp.Request.URL.Path,
 				"upstream", b.RawURL,
 				"status", resp.StatusCode,
 				"duration", time.Since(start),
@@ -96,9 +79,10 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
+			b := req.Context().Value(backendKey).(*backend.Backend)
 			p.logger.Error("proxy error",
-				"method", r.Method,
-				"path", r.URL.Path,
+				"method", req.Method,
+				"path", req.URL.Path,
 				"upstream", b.RawURL,
 				"error", err,
 			)
@@ -110,7 +94,29 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	rp.ServeHTTP(w, r)
+	return p
+}
+
+// ServeHTTP handles HTTP requests by selecting a healthy backend and proxying.
+func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	healthy := p.pool.GetHealthyBackends()
+	b, err := p.balancer.Select(healthy)
+	if err != nil {
+		p.logger.Error("no backends available", "method", r.Method, "path", r.URL.Path, "error", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "no backends available",
+		})
+		return
+	}
+
+	b.IncConns()
+	defer b.DecConns()
+
+	ctx := context.WithValue(r.Context(), backendKey, b)
+	ctx = context.WithValue(ctx, startTimeKey, time.Now())
+	p.reverseProxy.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // Handler returns an http.Handler that wraps the proxy with recovery and rate limiting.
