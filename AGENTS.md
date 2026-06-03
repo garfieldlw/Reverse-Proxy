@@ -2,8 +2,7 @@
 
 ## Project Overview
 
-Go reverse proxy supporting 7 protocols: HTTP, WebSocket, TCP, gRPC, Unix socket, UDP, JSON-RPC.
-Features: YAML config, load balancing (4 strategies), health checks, rate limiting, TLS, structured logging.
+Go reverse proxy supporting 7 protocols: HTTP, WebSocket, TCP, gRPC, Unix socket, UDP, JSON-RPC. Features: YAML config, load balancing (4 strategies), health checks, rate limiting, TLS, structured logging.
 
 ## Commands
 
@@ -62,13 +61,17 @@ config.example.yaml → Full reference config with all protocols and options
 - **Error wrapping**: Always use `fmt.Errorf("context: %w", err)` for error chains
 - **Config flow**: YAML → `config.Load()` (parse + defaults + validate) → pass `*config.Config` down
 - **Concurrency**: `sync.RWMutex` for pool/backend access, `atomic.Int64` for connection counters and consecutive pass/fail counts
-- **Server construction order** (in `NewServer()`): pools → balancers → rate limiter → health checkers → listeners. Pools must exist before balancers reference them.
+- **Server construction order** (in `NewServer()`): pools → balancers → rate limiter → health checkers → listeners. Pools must exist before balancers reference them. If listener creation fails, already-started health checkers are stopped before returning error.
+- **Listener categories**: `httpServers` (HTTP + WebSocket), `streamListeners` (TCP + Socket + RPC — share accept-loop pattern), `grpcServers` (gRPC), `packetListeners` (UDP)
 - **Socket proxy**: Reuses `TCPProxy` with `listenNetwork`/`dialNetwork` set to `"unix"`. `NewSocketProxy()` returns `*TCPProxy`. Backend address uses `URL.Path` (not `URL.Host`).
-- **gRPC proxy**: Transparent byte-level forwarding via custom `proxyCodec` registered in `init()`. Uses `grpc.UnknownServiceHandler` — no proto definitions needed. `ForceServerCodec` + `ForceCodec` on backend streams.
+- **gRPC proxy**: Transparent byte-level forwarding via custom `proxyCodec` registered in `init()`. Uses `grpc.UnknownServiceHandler` — no proto definitions needed. `ForceServerCodec` + `ForceCodec` on backend streams. Creates a new gRPC connection per request (no connection pooling).
 - **HTTP/WS handlers**: Wrap with `recoveryMiddleware` (outer) → `limiter.Middleware` (inner) → actual handler. Rate limiting only applies to HTTP/WS; TCP, gRPC, UDP, RPC have no rate limiting.
+- **WebSocket upgrader**: `CheckOrigin` always returns `true` (allows all origins). Buffer sizes: 1024 read/write.
+- **RPC proxy**: JSON-RPC 2.0 over TCP. Returns proper JSON-RPC error objects (with `jsonrpc`, `error`, `id` fields) when no backends available or backend unreachable. Uses `streamListener` like TCP/Socket.
 - **Error responses**: JSON `{"error": "..."}` for HTTP (503 for no backends, 502 for bad gateway, 500 for panics); JSON-RPC 2.0 error objects for RPC; gRPC status codes for gRPC
-- **UDP proxy**: Session-based routing — maps client addresses to backend connections so response packets route back correctly. 30s idle session timeout, cleanup every `sessionTimeout/2`.
+- **UDP proxy**: Session-based routing — maps client addresses to backend connections so response packets route back correctly. 30s idle session timeout, cleanup every `sessionTimeout/2`. Max packet size 65535.
 - **WeightedRoundRobin**: Stateful — uses `currentWeight` map keyed by backend URL
+- **Accept loop deadline**: Socket and RPC listeners set a 1s accept deadline for graceful shutdown; TCP listeners block on accept (closed via `ln.Close()`)
 
 ## Config (YAML)
 
@@ -84,6 +87,8 @@ config.example.yaml → Full reference config with all protocols and options
 - Valid log levels: `debug`, `info`, `warn`, `error`
 - Valid log formats: `json`, `text`
 - Valid log outputs: `stdout`, `stderr`
+- TLS can be configured per-listener or at server level (applies to default listener only)
+- gRPC TLS: wraps the `net.Listener` with `tls.NewListener` (not `grpc.Credentials`)
 
 ### Config Defaults (applied when zero-valued)
 
@@ -117,6 +122,7 @@ config.example.yaml → Full reference config with all protocols and options
 - `github.com/gorilla/websocket` — WebSocket upgrade and framing
 - `golang.org/x/time/rate` — token bucket rate limiter
 - `google.golang.org/grpc` — gRPC transparent proxy
+- `google.golang.org/protobuf` — proto message interface (used by proxyCodec for type-asserting raw bytes)
 - `gopkg.in/yaml.v3` — YAML config parsing
 
 ## Gotchas
@@ -128,8 +134,10 @@ config.example.yaml → Full reference config with all protocols and options
 - TLS min version is 1.2 with restricted cipher suites — see `tls/tls.go`
 - TLS cipher list includes both TLS 1.3 (AES/CHACHA20) and TLS 1.2 (ECDHE variants) suites
 - Shutdown timeout is hardcoded to 30s in `main.go`; individual test shutdowns use 5s
-- Shutdown order: stop health checkers → shutdown HTTP servers → GracefulStop gRPC (with force-stop fallback on timeout) → close TCP/socket/UDP/RPC listeners → wait for goroutines
+- Shutdown order: stop health checkers → shutdown HTTP servers → GracefulStop gRPC (with force-stop fallback on timeout) → close stream listeners (TCP/Socket/RPC) + cancel their accept loops → close packet listeners (UDP) → wait for all goroutines via done channels
 - Health checker `Stop()` waits up to 5s for the check goroutine to finish
 - Per-IP rate limiter entries are cleaned up every 10 minutes (`cleanupInterval`)
 - `httputil.ReverseProxy` creates a new transport per-request, so parallel Go benchmarks can exhaust macOS ephemeral ports — use `hey`/`wrk` for real parallel throughput
 - `config.example.yaml` must contain all 7 protocols and all 4 balancers or `TestConfigLoadFromExampleYAML` fails
+- gRPC proxy creates a new backend connection per incoming request — no connection reuse/pooling
+- SSE works through the HTTP proxy (httputil.ReverseProxy flushes responses) — no dedicated SSE proxy type
