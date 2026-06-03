@@ -13,13 +13,14 @@ import (
 
 // HealthChecker performs periodic health checks on a pool's backends.
 type HealthChecker struct {
-	pool   *Pool
-	cfg    config.HealthCheckConfig
-	client *http.Client
-	logger *slog.Logger
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
+	pool        *Pool
+	cfg         config.HealthCheckConfig
+	client      *http.Client
+	dialTimeout time.Duration
+	logger      *slog.Logger
+	ctx         context.Context
+	cancel      context.CancelFunc
+	done        chan struct{}
 }
 
 // NewHealthChecker creates a health checker for a pool.
@@ -29,8 +30,9 @@ func NewHealthChecker(pool *Pool, cfg config.HealthCheckConfig, logger *slog.Log
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &HealthChecker{
-		pool: pool,
-		cfg:  cfg,
+		pool:        pool,
+		cfg:         cfg,
+		dialTimeout: timeout,
 		client: &http.Client{
 			Timeout: timeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -40,7 +42,7 @@ func NewHealthChecker(pool *Pool, cfg config.HealthCheckConfig, logger *slog.Log
 		logger: logger,
 		ctx:    ctx,
 		cancel: cancel,
-		done:   make(chan struct{}),
+	done: make(chan struct{}),
 	}
 }
 
@@ -163,9 +165,7 @@ func (hc *HealthChecker) checkHTTP(b *Backend) {
 
 // checkUnix performs a Unix socket dial health check.
 func (hc *HealthChecker) checkUnix(b *Backend) {
-	timeout := parseDurationWithDefault(hc.cfg.Timeout, 5*time.Second)
-
-	conn, err := net.DialTimeout("unix", b.URL.Path, timeout)
+	conn, err := net.DialTimeout("unix", b.URL.Path, hc.dialTimeout)
 	if err != nil {
 		b.RecordFailure()
 		hc.logger.Debug("health check Unix dial failed",
@@ -186,9 +186,7 @@ func (hc *HealthChecker) checkUnix(b *Backend) {
 
 // checkTCP performs a TCP dial health check.
 func (hc *HealthChecker) checkTCP(b *Backend) {
-	timeout := parseDurationWithDefault(hc.cfg.Timeout, 5*time.Second)
-
-	dialer := net.Dialer{Timeout: timeout}
+	dialer := net.Dialer{Timeout: hc.dialTimeout}
 	conn, err := dialer.DialContext(hc.ctx, "tcp", b.URL.Host)
 	if err != nil {
 		b.RecordFailure()

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -151,10 +152,10 @@ func (c *Config) applyDefaults() {
 
 // Validate checks the configuration for errors and returns the first one found.
 func (c *Config) Validate() error {
-	validProtocols := map[string]bool{"http": true, "websocket": true, "tcp": true, "grpc": true, "socket": true, "udp": true, "rpc": true}
-	validBalancers := map[string]bool{"round_robin": true, "weighted_round_robin": true, "least_connections": true, "random": true}
-	validLogLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
-	validLogFormats := map[string]bool{"json": true, "text": true}
+	validProtocols := []string{"http", "websocket", "tcp", "grpc", "socket", "udp", "rpc"}
+	validBalancers := []string{"round_robin", "weighted_round_robin", "least_connections", "random"}
+	validLogLevels := []string{"debug", "info", "warn", "error"}
+	validLogFormats := []string{"json", "text"}
 
 	// Server.Listen must not be empty if no listeners configured
 	if c.Server.Listen == "" && len(c.Server.Listeners) == 0 {
@@ -163,7 +164,7 @@ func (c *Config) Validate() error {
 
 	// Validate listeners
 	for i, l := range c.Server.Listeners {
-		if !validProtocols[l.Protocol] {
+		if !slices.Contains(validProtocols, l.Protocol) {
 			return fmt.Errorf("listeners[%d].protocol: %q is not valid, must be one of: http, websocket, tcp, grpc, socket, udp, rpc", i, l.Protocol)
 		}
 		if l.Listen == "" {
@@ -191,7 +192,7 @@ func (c *Config) Validate() error {
 		}
 		poolNames[pool.Name] = true
 
-		if !validBalancers[pool.Balancer] {
+		if !slices.Contains(validBalancers, pool.Balancer) {
 			return fmt.Errorf("backend_pools[%d].balancer: %q is not valid, must be one of: round_robin, weighted_round_robin, least_connections, random", i, pool.Balancer)
 		}
 
@@ -228,10 +229,10 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate logging
-	if !validLogLevels[c.Logging.Level] {
+	if !slices.Contains(validLogLevels, c.Logging.Level) {
 		return fmt.Errorf("logging.level: %q is not valid, must be one of: debug, info, warn, error", c.Logging.Level)
 	}
-	if !validLogFormats[c.Logging.Format] {
+	if !slices.Contains(validLogFormats, c.Logging.Format) {
 		return fmt.Errorf("logging.format: %q is not valid, must be one of: json, text", c.Logging.Format)
 	}
 

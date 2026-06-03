@@ -29,7 +29,7 @@ func TestHealthCheckHTTP(t *testing.T) {
 		Name:     "http-test",
 		Balancer: "round_robin",
 		Backends: []*Backend{
-			{RawURL: server.URL, status: StatusHealthy},
+			NewBackendForTest(server.URL, StatusHealthy),
 		},
 		logger: slog.Default(),
 	}
@@ -98,7 +98,7 @@ func TestHealthCheckTCP(t *testing.T) {
 		Name:     "tcp-test",
 		Balancer: "round_robin",
 		Backends: []*Backend{
-			{RawURL: rawURL, status: StatusHealthy},
+			NewBackendForTest(rawURL, StatusHealthy),
 		},
 		logger: slog.Default(),
 	}
@@ -169,7 +169,7 @@ func TestHealthCheckThresholds(t *testing.T) {
 		Name:     "threshold-test",
 		Balancer: "round_robin",
 		Backends: []*Backend{
-			{RawURL: server.URL, status: StatusHealthy},
+			NewBackendForTest(server.URL, StatusHealthy),
 		},
 		logger: slog.Default(),
 	}
@@ -217,7 +217,7 @@ func TestHealthCheckStop(t *testing.T) {
 		Name:     "stop-test",
 		Balancer: "round_robin",
 		Backends: []*Backend{
-			{RawURL: server.URL, status: StatusHealthy},
+			NewBackendForTest(server.URL, StatusHealthy),
 		},
 		logger: slog.Default(),
 	}
@@ -263,7 +263,7 @@ func TestHealthCheckContextCancellation(t *testing.T) {
 		Name:     "ctx-test",
 		Balancer: "round_robin",
 		Backends: []*Backend{
-			{RawURL: server.URL, status: StatusHealthy},
+			NewBackendForTest(server.URL, StatusHealthy),
 		},
 		logger: slog.Default(),
 	}
