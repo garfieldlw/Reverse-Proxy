@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net"
 	"net/http"
@@ -86,11 +85,9 @@ func NewHTTPProxy(pool *backend.Pool, bal balancer.Balancer, limiter *ratelimit.
 				"upstream", b.RawURL,
 				"error", err,
 			)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadGateway)
-			json.NewEncoder(w).Encode(map[string]string{
-				"error": "bad gateway",
-			})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write(errBytesBadGateway)
 		},
 	}
 
@@ -105,9 +102,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.logger.Error("no backends available", "method", r.Method, "path", r.URL.Path, "error", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "no backends available",
-		})
+		w.Write(errBytesNoBackends)
 		return
 	}
 
@@ -139,11 +134,9 @@ func recoveryMiddleware(next http.Handler, logger *slog.Logger) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				logger.Error("panic recovered", "error", rec)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(map[string]string{
-					"error": "internal server error",
-				})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write(errBytesInternalError)
 			}
 		}()
 		next.ServeHTTP(w, r)

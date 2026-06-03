@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -48,9 +47,7 @@ func (p *WSProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.logger.Error("no backends available", "error", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "no healthy backends available",
-		})
+		w.Write(errBytesNoHealthy)
 		return
 	}
 

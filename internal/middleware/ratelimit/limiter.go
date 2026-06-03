@@ -1,7 +1,6 @@
 package ratelimit
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -16,6 +15,9 @@ import (
 
 // cleanupInterval controls how often stale per-IP entries are purged.
 const cleanupInterval = 10 * time.Minute
+
+// errRateLimitFmt is a format string for 429 rate limit responses.
+const errRateLimitFmt = "{\"error\":\"rate limit exceeded\",\"retry_after\":%d}\n"
 
 // Limiter is an HTTP middleware that performs rate limiting.
 type Limiter struct {
@@ -173,9 +175,5 @@ func (l *Limiter) writeRateLimitResponse(w http.ResponseWriter, ip, path string,
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusTooManyRequests)
 
-	body := map[string]interface{}{
-		"error":        "rate limit exceeded",
-		"retry_after":  retryAfterSec,
-	}
-	json.NewEncoder(w).Encode(body)
+	fmt.Fprintf(w, errRateLimitFmt, retryAfterSec)
 }
