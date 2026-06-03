@@ -84,10 +84,11 @@ func (b *Backend) GetConsecutivePasses() int64 {
 
 // Pool manages a collection of backends.
 type Pool struct {
-	Name      string
-	Balancer  string
-	Backends  []*Backend
-	logger    *slog.Logger
+	Name           string
+	Balancer       string
+	Backends       []*Backend
+	logger         *slog.Logger
+	healthyBackends atomic.Pointer[[]*Backend] // cached healthy backends slice
 }
 
 // NewPool creates a new backend pool from config.
@@ -115,11 +116,29 @@ func NewPool(cfg config.BackendPoolConfig, logger *slog.Logger) (*Pool, error) {
 		pool.Backends = append(pool.Backends, b)
 	}
 
+	// Build initial healthy backends cache.
+	pool.rebuildHealthyCache()
+
 	return pool, nil
+}
+
+// rebuildHealthyCache rebuilds the healthy backends cache and atomically stores it.
+func (p *Pool) rebuildHealthyCache() {
+	healthy := make([]*Backend, 0, len(p.Backends))
+	for _, b := range p.Backends {
+		if b.IsHealthy() {
+			healthy = append(healthy, b)
+		}
+	}
+	p.healthyBackends.Store(&healthy)
 }
 
 // GetHealthyBackends returns a slice of currently healthy backends.
 func (p *Pool) GetHealthyBackends() []*Backend {
+	if cached := p.healthyBackends.Load(); cached != nil {
+		return *cached
+	}
+	// Fallback for pools created without cache (e.g. tests using struct literals).
 	healthy := make([]*Backend, 0, len(p.Backends))
 	for _, b := range p.Backends {
 		if b.IsHealthy() {
@@ -139,6 +158,7 @@ func (p *Pool) GetAllBackends() []*Backend {
 // MarkBackendUnhealthy marks a backend as unhealthy and logs a warning.
 func (p *Pool) MarkBackendUnhealthy(b *Backend) {
 	b.SetStatus(StatusUnhealthy)
+	p.rebuildHealthyCache()
 	p.logger.Warn("backend marked unhealthy",
 		"pool", p.Name,
 		"backend", b.RawURL,
@@ -149,6 +169,7 @@ func (p *Pool) MarkBackendUnhealthy(b *Backend) {
 // MarkBackendHealthy marks a backend as healthy and logs an info message.
 func (p *Pool) MarkBackendHealthy(b *Backend) {
 	b.SetStatus(StatusHealthy)
+	p.rebuildHealthyCache()
 	p.logger.Info("backend marked healthy",
 		"pool", p.Name,
 		"backend", b.RawURL,

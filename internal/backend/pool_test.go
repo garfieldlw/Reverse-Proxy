@@ -321,3 +321,67 @@ func TestBackendSetStatusDirectly(t *testing.T) {
 		t.Fatal("expected healthy after SetStatus")
 	}
 }
+
+func TestPoolHealthyBackendsCache(t *testing.T) {
+	pool := &Pool{
+		Name:     "test-cache",
+		Balancer: "round_robin",
+		Backends: []*Backend{
+			NewBackendForTest("http://a:80", StatusHealthy),
+			NewBackendForTest("http://b:80", StatusUnhealthy),
+			NewBackendForTest("http://c:80", StatusHealthy),
+		},
+		logger: slog.Default(),
+	}
+
+	// First call should return healthy backends (fallback builds it since no cache yet).
+	healthy := pool.GetHealthyBackends()
+	if len(healthy) != 2 {
+		t.Fatalf("expected 2 healthy backends, got %d", len(healthy))
+	}
+
+	// Mark one healthy backend as unhealthy — cache should update.
+	pool.MarkBackendUnhealthy(pool.Backends[0])
+	healthy = pool.GetHealthyBackends()
+	if len(healthy) != 1 {
+		t.Fatalf("expected 1 healthy backend after marking unhealthy, got %d", len(healthy))
+	}
+
+	// Mark it healthy again — cache should update.
+	pool.MarkBackendHealthy(pool.Backends[0])
+	healthy = pool.GetHealthyBackends()
+	if len(healthy) != 2 {
+		t.Fatalf("expected 2 healthy backends after marking healthy, got %d", len(healthy))
+	}
+}
+
+func TestPoolHealthyBackendsCacheConcurrent(t *testing.T) {
+	pool := &Pool{
+		Name:     "concurrent-cache",
+		Balancer: "round_robin",
+		Backends: []*Backend{
+			NewBackendForTest("http://a:80", StatusHealthy),
+			NewBackendForTest("http://b:80", StatusUnhealthy),
+		},
+		logger: slog.Default(),
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = pool.GetHealthyBackends()
+		}()
+		go func(idx int) {
+			defer wg.Done()
+			b := pool.Backends[idx%2]
+			if idx%2 == 0 {
+				pool.MarkBackendUnhealthy(b)
+			} else {
+				pool.MarkBackendHealthy(b)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
