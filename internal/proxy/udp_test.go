@@ -448,3 +448,88 @@ func TestUDPProxyContextCancellation(t *testing.T) {
 		t.Errorf("expected 0 sessions after context cancellation, got %d", p.SessionCount())
 	}
 }
+
+func TestUDPProxyMaxSessions(t *testing.T) {
+	echoConn, echoAddr := startUDPEchoServer(t)
+	defer echoConn.Close()
+
+	pool := newUDPTestPool(t, echoAddr)
+	lb := newTestBalancer(t)
+	p := NewUDPProxy(pool, lb, slog.Default())
+	p.SetSessionTimeout(10 * time.Second)
+	p.SetMaxSessions(3) // Allow only 3 sessions
+
+	proxyConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxyConn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go p.ServePacketConn(ctx, proxyConn)
+
+	// Create 5 sessions from different client addresses
+	for i := 0; i < 5; i++ {
+		clientConn, err := net.Dial("udp", proxyConn.LocalAddr().String())
+		if err != nil {
+			t.Fatalf("failed to dial: %v", err)
+		}
+		clientConn.Write([]byte("test"))
+		clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 65535)
+		clientConn.Read(buf)
+		// Don't close — keep session alive
+		defer clientConn.Close()
+	}
+
+	time.Sleep(500 * time.Millisecond) // Let sessions settle
+
+	// Session count should not exceed maxSessions
+	if p.SessionCount() > p.maxSessions {
+		t.Errorf("expected session count <= %d, got %d", p.maxSessions, p.SessionCount())
+	}
+}
+
+func TestUDPProxyMaxSessionsZeroUnlimited(t *testing.T) {
+	echoConn, echoAddr := startUDPEchoServer(t)
+	defer echoConn.Close()
+
+	pool := newUDPTestPool(t, echoAddr)
+	lb := newTestBalancer(t)
+	p := NewUDPProxy(pool, lb, slog.Default())
+	p.SetSessionTimeout(10 * time.Second)
+	p.SetMaxSessions(0) // 0 = unlimited
+
+	proxyConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxyConn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go p.ServePacketConn(ctx, proxyConn)
+
+	// Create more than the default 10000 limit would allow (just 10 for test speed)
+	for i := 0; i < 10; i++ {
+		clientConn, err := net.Dial("udp", proxyConn.LocalAddr().String())
+		if err != nil {
+			t.Fatalf("failed to dial: %v", err)
+		}
+		clientConn.Write([]byte("test"))
+		clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 65535)
+		clientConn.Read(buf)
+		defer clientConn.Close()
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	// With maxSessions=0, all 10 sessions should be allowed
+	if p.SessionCount() < 10 {
+		t.Errorf("expected at least 10 sessions with unlimited max, got %d", p.SessionCount())
+	}
+}

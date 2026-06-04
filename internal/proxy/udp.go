@@ -21,13 +21,14 @@ const (
 // It maps client addresses to backend connections so response packets
 // can be routed back to the correct client.
 type UDPProxy struct {
-	pool           *backend.Pool
-	balancer       balancer.Balancer
-	logger         *slog.Logger
-	dialTimeout    time.Duration
+	pool          *backend.Pool
+	balancer      balancer.Balancer
+	logger        *slog.Logger
+	dialTimeout   time.Duration
 	sessionTimeout time.Duration
-	mu             sync.Mutex
-	sessions       map[string]*udpSession // clientAddr key -> session
+	maxSessions   int
+	mu            sync.Mutex
+	sessions      map[string]*udpSession // clientAddr key -> session
 }
 
 type udpSession struct {
@@ -69,6 +70,12 @@ func (p *UDPProxy) SetSessionTimeout(d time.Duration) {
 // SetDialTimeout sets the timeout for dialing backend connections.
 func (p *UDPProxy) SetDialTimeout(d time.Duration) {
 	p.dialTimeout = d
+}
+
+// SetMaxSessions sets the maximum number of concurrent UDP sessions.
+// 0 means unlimited.
+func (p *UDPProxy) SetMaxSessions(n int) {
+	p.maxSessions = n
 }
 
 // ServePacketConn reads packets from a net.PacketConn and forwards them
@@ -114,6 +121,11 @@ func (p *UDPProxy) handlePacket(ctx context.Context, conn net.PacketConn, client
 	p.mu.Lock()
 	session, exists := p.sessions[key]
 	if !exists {
+		// Check session limit and evict if needed.
+		if p.maxSessions > 0 && len(p.sessions) >= p.maxSessions {
+			p.evictRandomSession()
+		}
+
 		// Create new session under the write lock to prevent TOCTOU races.
 		healthy := p.pool.GetHealthyBackends()
 		b, err := p.balancer.Select(healthy)
@@ -190,6 +202,18 @@ func (p *UDPProxy) relayFromBackend(conn net.PacketConn, clientAddr net.Addr, se
 	}
 
 	p.closeSession(clientAddr.String(), session)
+}
+
+// evictRandomSession evicts a random session when the session limit is reached.
+// Must be called with p.mu held.
+func (p *UDPProxy) evictRandomSession() {
+	for key, session := range p.sessions {
+		p.logger.Warn("udp session evicted: max sessions reached", "client", key, "max_sessions", p.maxSessions)
+		session.backendConn.Close()
+		session.backend.DecConns()
+		delete(p.sessions, key)
+		return // Evict one is enough
+	}
 }
 
 // closeSession removes a session and releases resources.

@@ -337,13 +337,17 @@ func (s *Server) createUDPListener(lc config.ListenerConfig) error {
 
 	udpProxy := proxy.NewUDPProxy(pool, bal, s.logger)
 
-	if s.cfg.Server.Transport.DialTimeout != "" {
-		if d, err := time.ParseDuration(s.cfg.Server.Transport.DialTimeout); err == nil {
+	// Apply UDP-specific config.
+	if s.cfg.Server.UDP.MaxSessions > 0 {
+		udpProxy.SetMaxSessions(s.cfg.Server.UDP.MaxSessions)
+	}
+	if s.cfg.Server.UDP.DialTimeout != "" {
+		if d, err := time.ParseDuration(s.cfg.Server.UDP.DialTimeout); err == nil {
 			udpProxy.SetDialTimeout(d)
 		}
 	}
-	if s.cfg.Server.Transport.IdleConnTimeout != "" {
-		if d, err := time.ParseDuration(s.cfg.Server.Transport.IdleConnTimeout); err == nil {
+	if s.cfg.Server.UDP.SessionTimeout != "" {
+		if d, err := time.ParseDuration(s.cfg.Server.UDP.SessionTimeout); err == nil {
 			udpProxy.SetSessionTimeout(d)
 		}
 	}

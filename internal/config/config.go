@@ -25,12 +25,20 @@ type TransportConfig struct {
 	DialTimeout         string `yaml:"dial_timeout"`
 }
 
+// UDPConfig defines UDP-specific proxy settings.
+type UDPConfig struct {
+	MaxSessions    int    `yaml:"max_sessions"`    // default: 10000, 0 = unlimited
+	DialTimeout    string `yaml:"dial_timeout"`    // default: "10s"
+	SessionTimeout string `yaml:"session_timeout"` // default: "30s"
+}
+
 // ServerConfig defines the server-level settings.
 type ServerConfig struct {
-	Listen    string          `yaml:"listen"`
-	TLS       TLSConfig       `yaml:"tls"`
+	Listen    string         `yaml:"listen"`
+	TLS       TLSConfig      `yaml:"tls"`
 	Listeners []ListenerConfig `yaml:"listeners"`
 	Transport TransportConfig `yaml:"transport"`
+	UDP       UDPConfig      `yaml:"udp"`
 }
 
 // ListenerConfig defines a single listener (protocol-specific).
@@ -170,6 +178,16 @@ func (c *Config) applyDefaults() {
 	if c.Server.Transport.DialTimeout == "" {
 		c.Server.Transport.DialTimeout = "10s"
 	}
+
+	if c.Server.UDP.MaxSessions == 0 {
+		c.Server.UDP.MaxSessions = 10000
+	}
+	if c.Server.UDP.DialTimeout == "" {
+		c.Server.UDP.DialTimeout = "10s"
+	}
+	if c.Server.UDP.SessionTimeout == "" {
+		c.Server.UDP.SessionTimeout = "30s"
+	}
 }
 
 // Validate checks the configuration for errors and returns the first one found.
@@ -266,6 +284,20 @@ func (c *Config) Validate() error {
 	if c.Server.Transport.DialTimeout != "" {
 		if _, err := time.ParseDuration(c.Server.Transport.DialTimeout); err != nil {
 			return fmt.Errorf("server.transport.dial_timeout: %q is not a valid duration: %w", c.Server.Transport.DialTimeout, err)
+		}
+	}
+
+	if c.Server.UDP.MaxSessions < 0 {
+		return fmt.Errorf("server.udp.max_sessions must be >= 0")
+	}
+	if c.Server.UDP.DialTimeout != "" {
+		if _, err := time.ParseDuration(c.Server.UDP.DialTimeout); err != nil {
+			return fmt.Errorf("server.udp.dial_timeout: %q is not a valid duration: %w", c.Server.UDP.DialTimeout, err)
+		}
+	}
+	if c.Server.UDP.SessionTimeout != "" {
+		if _, err := time.ParseDuration(c.Server.UDP.SessionTimeout); err != nil {
+			return fmt.Errorf("server.udp.session_timeout: %q is not a valid duration: %w", c.Server.UDP.SessionTimeout, err)
 		}
 	}
 

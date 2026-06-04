@@ -19,7 +19,13 @@ server:
     max_idle_conns: 512          # Maximum total idle connections (HTTP)
     max_idle_conns_per_host: 64  # Maximum idle connections per backend host (HTTP)
     idle_conn_timeout: "90s"     # How long idle connections stay open (HTTP)
-    dial_timeout: "10s"          # Timeout for dialing backend connections (all protocols)
+  dial_timeout: "10s" # Timeout for dialing backend connections (all protocols)
+
+  # UDP-specific settings for session management.
+  udp:
+    max_sessions: 10000 # Maximum concurrent UDP sessions (0 = unlimited)
+    dial_timeout: "10s" # Timeout for dialing UDP backends
+    session_timeout: "30s" # Idle timeout for UDP sessions
 
   # Multiple protocol listeners.
   # Each listener can serve a different protocol (http, websocket, tcp, grpc, socket, udp, rpc)
