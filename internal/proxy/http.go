@@ -11,6 +11,7 @@ import (
 
 	"github.com/garfieldlw/reverse-proxy/internal/backend"
 	"github.com/garfieldlw/reverse-proxy/internal/balancer"
+	"github.com/garfieldlw/reverse-proxy/internal/config"
 	"github.com/garfieldlw/reverse-proxy/internal/middleware/ratelimit"
 )
 
@@ -33,17 +34,26 @@ type HTTPProxy struct {
 }
 
 // NewHTTPProxy creates a new HTTP reverse proxy handler.
-func NewHTTPProxy(pool *backend.Pool, bal balancer.Balancer, limiter *ratelimit.Limiter, logger *slog.Logger) *HTTPProxy {
+func NewHTTPProxy(pool *backend.Pool, bal balancer.Balancer, limiter *ratelimit.Limiter, logger *slog.Logger, transportCfg config.TransportConfig) *HTTPProxy {
+	idleTimeout, _ := time.ParseDuration(transportCfg.IdleConnTimeout)
+	dialTimeout, _ := time.ParseDuration(transportCfg.DialTimeout)
+	if idleTimeout == 0 {
+		idleTimeout = 90 * time.Second
+	}
+	if dialTimeout == 0 {
+		dialTimeout = 10 * time.Second
+	}
+
 	p := &HTTPProxy{
 		pool:     pool,
 		balancer: bal,
 		limiter:  limiter,
 		logger:   logger,
 		transport: &http.Transport{
-			MaxIdleConns:        512,
-			MaxIdleConnsPerHost: 64,
-			IdleConnTimeout:     90 * time.Second,
-			DialContext:         (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			MaxIdleConns:        transportCfg.MaxIdleConns,
+			MaxIdleConnsPerHost: transportCfg.MaxIdleConnsPerHost,
+			IdleConnTimeout:     idleTimeout,
+			DialContext:         (&net.Dialer{Timeout: dialTimeout}).DialContext,
 		},
 	}
 

@@ -78,7 +78,7 @@ func BenchmarkSSEProxyConnectionEstablishment(b *testing.B) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy)
 	defer proxySrv.Close()
 
@@ -102,7 +102,7 @@ func BenchmarkSSEProxyEventThroughput(b *testing.B) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy)
 	defer proxySrv.Close()
 
@@ -138,7 +138,7 @@ func BenchmarkSSEProxyEventSizes(b *testing.B) {
 			rr := &balancer.RoundRobin{}
 			logger := slog.Default()
 
-			proxy := NewHTTPProxy(pool, rr, nil, logger)
+			proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 			proxySrv := httptest.NewServer(proxy)
 			defer proxySrv.Close()
 
@@ -173,7 +173,7 @@ func BenchmarkSSEProxyMultiBackend(b *testing.B) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy)
 	defer proxySrv.Close()
 
@@ -205,7 +205,7 @@ func BenchmarkSSEProxyWithRateLimiter(b *testing.B) {
 	}
 	limiter := ratelimit.New(cfg, logger)
 
-	proxy := NewHTTPProxy(pool, rr, limiter, logger)
+	proxy := NewHTTPProxy(pool, rr, limiter, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy.Handler())
 	defer proxySrv.Close()
 

@@ -53,7 +53,7 @@ func BenchmarkWSProxySingleBackend(b *testing.B) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewWSProxy(pool, rr, nil, logger)
+	proxy := NewWSProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy)
 	defer proxySrv.Close()
 
@@ -77,7 +77,7 @@ func BenchmarkWSProxyMultiMessage(b *testing.B) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewWSProxy(pool, rr, nil, logger)
+	proxy := NewWSProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy)
 	defer proxySrv.Close()
 
@@ -127,7 +127,7 @@ func BenchmarkWSProxyMessageSizes(b *testing.B) {
 			rr := &balancer.RoundRobin{}
 			logger := slog.Default()
 
-			proxy := NewWSProxy(pool, rr, nil, logger)
+			proxy := NewWSProxy(pool, rr, nil, logger, config.TransportConfig{})
 			proxySrv := httptest.NewServer(proxy)
 			defer proxySrv.Close()
 
@@ -180,7 +180,7 @@ func BenchmarkWSProxyMultiBackend(b *testing.B) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewWSProxy(pool, rr, nil, logger)
+	proxy := NewWSProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy)
 	defer proxySrv.Close()
 
@@ -224,7 +224,7 @@ func BenchmarkWSProxyWithRateLimiter(b *testing.B) {
 	}
 	limiter := ratelimit.New(cfg, logger)
 
-	proxy := NewWSProxy(pool, rr, limiter, logger)
+	proxy := NewWSProxy(pool, rr, limiter, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy.Handler())
 	defer proxySrv.Close()
 

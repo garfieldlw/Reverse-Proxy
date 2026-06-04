@@ -10,6 +10,7 @@ import (
 
 	"github.com/garfieldlw/reverse-proxy/internal/backend"
 	"github.com/garfieldlw/reverse-proxy/internal/balancer"
+	"github.com/garfieldlw/reverse-proxy/internal/config"
 	"github.com/garfieldlw/reverse-proxy/internal/middleware/ratelimit"
 	"github.com/gorilla/websocket"
 )
@@ -25,7 +26,12 @@ type WSProxy struct {
 }
 
 // NewWSProxy creates a new WebSocket reverse proxy handler.
-func NewWSProxy(pool *backend.Pool, balancer balancer.Balancer, limiter *ratelimit.Limiter, logger *slog.Logger) *WSProxy {
+func NewWSProxy(pool *backend.Pool, balancer balancer.Balancer, limiter *ratelimit.Limiter, logger *slog.Logger, transportCfg config.TransportConfig) *WSProxy {
+	dialTimeout, _ := time.ParseDuration(transportCfg.DialTimeout)
+	if dialTimeout == 0 {
+		dialTimeout = 10 * time.Second
+	}
+
 	return &WSProxy{
 		pool:     pool,
 		balancer: balancer,
@@ -39,7 +45,7 @@ func NewWSProxy(pool *backend.Pool, balancer balancer.Balancer, limiter *ratelim
 			},
 		},
 		dialer: &websocket.Dialer{
-			HandshakeTimeout: 10 * time.Second,
+			HandshakeTimeout: dialTimeout,
 		},
 	}
 }

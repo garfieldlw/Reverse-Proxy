@@ -69,7 +69,7 @@ func BenchmarkHTTPProxySingleBackend(b *testing.B) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy)
 	defer proxySrv.Close()
 
@@ -109,7 +109,7 @@ func BenchmarkHTTPProxyMultiBackend(b *testing.B) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy)
 	defer proxySrv.Close()
 
@@ -162,7 +162,7 @@ func BenchmarkHTTPProxyBodySizes(b *testing.B) {
 			rr := &balancer.RoundRobin{}
 			logger := slog.Default()
 
-			proxy := NewHTTPProxy(pool, rr, nil, logger)
+			proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 			proxySrv := httptest.NewServer(proxy)
 			defer proxySrv.Close()
 
@@ -199,7 +199,7 @@ func BenchmarkHTTPProxyWithRateLimiter(b *testing.B) {
 	}
 	limiter := ratelimit.New(cfg, logger)
 
-	proxy := NewHTTPProxy(pool, rr, limiter, logger)
+	proxy := NewHTTPProxy(pool, rr, limiter, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy.Handler())
 	defer proxySrv.Close()
 
@@ -235,7 +235,7 @@ func BenchmarkHTTPProxyWithHealthCheck(b *testing.B) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy)
 	defer proxySrv.Close()
 
@@ -272,7 +272,7 @@ func BenchmarkHTTPProxyParallel(b *testing.B) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxySrv := httptest.NewServer(proxy)
 	defer proxySrv.Close()
 

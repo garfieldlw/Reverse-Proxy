@@ -17,11 +17,20 @@ type Config struct {
 	Logging      LoggingConfig      `yaml:"logging"`
 }
 
+// TransportConfig defines connection pool and dial parameters for proxies.
+type TransportConfig struct {
+	MaxIdleConns        int    `yaml:"max_idle_conns"`
+	MaxIdleConnsPerHost int    `yaml:"max_idle_conns_per_host"`
+	IdleConnTimeout     string `yaml:"idle_conn_timeout"`
+	DialTimeout         string `yaml:"dial_timeout"`
+}
+
 // ServerConfig defines the server-level settings.
 type ServerConfig struct {
-	Listen    string           `yaml:"listen"`
-	TLS       TLSConfig        `yaml:"tls"`
+	Listen    string          `yaml:"listen"`
+	TLS       TLSConfig       `yaml:"tls"`
 	Listeners []ListenerConfig `yaml:"listeners"`
+	Transport TransportConfig `yaml:"transport"`
 }
 
 // ListenerConfig defines a single listener (protocol-specific).
@@ -148,6 +157,19 @@ func (c *Config) applyDefaults() {
 	if c.RateLimit.Burst == 0 {
 		c.RateLimit.Burst = 200
 	}
+
+	if c.Server.Transport.MaxIdleConns == 0 {
+		c.Server.Transport.MaxIdleConns = 512
+	}
+	if c.Server.Transport.MaxIdleConnsPerHost == 0 {
+		c.Server.Transport.MaxIdleConnsPerHost = 64
+	}
+	if c.Server.Transport.IdleConnTimeout == "" {
+		c.Server.Transport.IdleConnTimeout = "90s"
+	}
+	if c.Server.Transport.DialTimeout == "" {
+		c.Server.Transport.DialTimeout = "10s"
+	}
 }
 
 // Validate checks the configuration for errors and returns the first one found.
@@ -234,6 +256,17 @@ func (c *Config) Validate() error {
 	}
 	if !slices.Contains(validLogFormats, c.Logging.Format) {
 		return fmt.Errorf("logging.format: %q is not valid, must be one of: json, text", c.Logging.Format)
+	}
+
+	if c.Server.Transport.IdleConnTimeout != "" {
+		if _, err := time.ParseDuration(c.Server.Transport.IdleConnTimeout); err != nil {
+			return fmt.Errorf("server.transport.idle_conn_timeout: %q is not a valid duration: %w", c.Server.Transport.IdleConnTimeout, err)
+		}
+	}
+	if c.Server.Transport.DialTimeout != "" {
+		if _, err := time.ParseDuration(c.Server.Transport.DialTimeout); err != nil {
+			return fmt.Errorf("server.transport.dial_timeout: %q is not a valid duration: %w", c.Server.Transport.DialTimeout, err)
+		}
 	}
 
 	return nil

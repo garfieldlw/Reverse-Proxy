@@ -13,6 +13,7 @@ import (
 
 	"github.com/garfieldlw/reverse-proxy/internal/backend"
 	"github.com/garfieldlw/reverse-proxy/internal/balancer"
+	"github.com/garfieldlw/reverse-proxy/internal/config"
 	"github.com/gorilla/websocket"
 )
 
@@ -42,7 +43,7 @@ func TestWSProxySuccess(t *testing.T) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewWSProxy(pool, rr, nil, logger)
+	proxy := NewWSProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 
@@ -86,7 +87,7 @@ func TestWSProxyNoBackends(t *testing.T) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewWSProxy(pool, rr, nil, logger)
+	proxy := NewWSProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 
@@ -160,7 +161,7 @@ func TestWSProxyBackendSelection(t *testing.T) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewWSProxy(pool, rr, nil, logger)
+	proxy := NewWSProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 
@@ -204,7 +205,7 @@ func TestWSProxyClose(t *testing.T) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewWSProxy(pool, rr, nil, logger)
+	proxy := NewWSProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 

@@ -37,7 +37,7 @@ func TestHTTPProxySuccess(t *testing.T) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 
@@ -70,7 +70,7 @@ func TestHTTPProxyNoBackends(t *testing.T) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 
@@ -124,7 +124,7 @@ func TestHTTPProxyBackendSelection(t *testing.T) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 
@@ -166,7 +166,7 @@ func TestHTTPProxyConnectionTracking(t *testing.T) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 
@@ -231,7 +231,7 @@ func TestHTTPProxyHeaders(t *testing.T) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 
@@ -263,7 +263,7 @@ func TestHTTPProxyError(t *testing.T) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	proxy := NewHTTPProxy(pool, rr, nil, logger)
+	proxy := NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 	proxyServer := httptest.NewServer(proxy)
 	defer proxyServer.Close()
 
@@ -306,7 +306,7 @@ func TestHTTPProxyRecovery(t *testing.T) {
 	rr := &balancer.RoundRobin{}
 	logger := slog.Default()
 
-	_ = NewHTTPProxy(pool, rr, nil, logger)
+	_ = NewHTTPProxy(pool, rr, nil, logger, config.TransportConfig{})
 
 	panicHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("test panic")
@@ -365,7 +365,7 @@ func TestHTTPProxyHandlerWithRateLimiter(t *testing.T) {
 	}
 	limiter := ratelimit.New(cfg, logger)
 
-	proxy := NewHTTPProxy(pool, rr, limiter, logger)
+	proxy := NewHTTPProxy(pool, rr, limiter, logger, config.TransportConfig{})
 	proxyServer := httptest.NewServer(proxy.Handler())
 	defer proxyServer.Close()
 

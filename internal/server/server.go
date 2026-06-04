@@ -205,9 +205,9 @@ func (s *Server) createHTTPListener(lc config.ListenerConfig) error {
 
 		var handler http.Handler
 		if lc.Protocol == "websocket" {
-			handler = proxy.NewWSProxy(pool, bal, s.limiter, s.logger).Handler()
+			handler = proxy.NewWSProxy(pool, bal, s.limiter, s.logger, s.cfg.Server.Transport).Handler()
 		} else {
-			handler = proxy.NewHTTPProxy(pool, bal, s.limiter, s.logger).Handler()
+			handler = proxy.NewHTTPProxy(pool, bal, s.limiter, s.logger, s.cfg.Server.Transport).Handler()
 		}
 
 		mux.Handle(route.Match, handler)
@@ -239,6 +239,12 @@ func (s *Server) createTCPListener(lc config.ListenerConfig) error {
 	}
 
 	tcpProxy := proxy.NewTCPProxy(pool, bal, s.logger)
+
+	if s.cfg.Server.Transport.DialTimeout != "" {
+		if d, err := time.ParseDuration(s.cfg.Server.Transport.DialTimeout); err == nil {
+			tcpProxy.SetDialTimeout(d)
+		}
+	}
 
 	ln, err := net.Listen("tcp", lc.Listen)
 	if err != nil {
@@ -297,6 +303,12 @@ func (s *Server) createSocketListener(lc config.ListenerConfig) error {
 
 	socketProxy := proxy.NewSocketProxy(pool, bal, s.logger)
 
+	if s.cfg.Server.Transport.DialTimeout != "" {
+		if d, err := time.ParseDuration(s.cfg.Server.Transport.DialTimeout); err == nil {
+			socketProxy.SetDialTimeout(d)
+		}
+	}
+
 	// Remove existing socket file if present (standard Unix socket practice).
 	if _, err := os.Stat(lc.Listen); err == nil {
 		os.Remove(lc.Listen)
@@ -325,6 +337,17 @@ func (s *Server) createUDPListener(lc config.ListenerConfig) error {
 
 	udpProxy := proxy.NewUDPProxy(pool, bal, s.logger)
 
+	if s.cfg.Server.Transport.DialTimeout != "" {
+		if d, err := time.ParseDuration(s.cfg.Server.Transport.DialTimeout); err == nil {
+			udpProxy.SetDialTimeout(d)
+		}
+	}
+	if s.cfg.Server.Transport.IdleConnTimeout != "" {
+		if d, err := time.ParseDuration(s.cfg.Server.Transport.IdleConnTimeout); err == nil {
+			udpProxy.SetSessionTimeout(d)
+		}
+	}
+
 	conn, err := net.ListenPacket("udp", lc.Listen)
 	if err != nil {
 		return fmt.Errorf("udp listen on %s: %w", lc.Listen, err)
@@ -347,6 +370,12 @@ func (s *Server) createRPCListener(lc config.ListenerConfig) error {
 	}
 
 	rpcProxy := proxy.NewRPCProxy(pool, bal, s.logger)
+
+	if s.cfg.Server.Transport.DialTimeout != "" {
+		if d, err := time.ParseDuration(s.cfg.Server.Transport.DialTimeout); err == nil {
+			rpcProxy.SetDialTimeout(d)
+		}
+	}
 
 	ln, err := net.Listen("tcp", lc.Listen)
 	if err != nil {
