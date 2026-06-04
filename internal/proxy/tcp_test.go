@@ -380,6 +380,130 @@ func TestSocketProxySetNetworks(t *testing.T) {
 	}
 }
 
+func TestBidirectionalCopyBufferPool(t *testing.T) {
+	echoListener, echoAddr := startTCPEchoServer(t)
+	defer echoListener.Close()
+
+	pool := newTCPTestPool(t, echoAddr)
+	lb := newTestBalancer(t)
+	proxy := NewTCPProxy(pool, lb, slog.Default())
+
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer proxyListener.Close()
+
+	go func() {
+		for {
+			conn, err := proxyListener.Accept()
+			if err != nil {
+				return
+			}
+			go proxy.ServeTCP(conn)
+		}
+	}()
+
+	conn, err := net.DialTimeout("tcp", proxyListener.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("failed to connect to proxy: %v", err)
+	}
+	defer conn.Close()
+
+	// 8KB data — larger than the 4KB pooled buffer to verify io.CopyBuffer handles multiple reads.
+	data := make([]byte, 8192)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+
+	_, err = conn.Write(data)
+	if err != nil {
+		t.Fatalf("failed to write: %v", err)
+	}
+
+	received := make([]byte, 0, len(data))
+	readBuf := make([]byte, 4096)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for len(received) < len(data) {
+		n, err := conn.Read(readBuf)
+		if err != nil {
+			t.Fatalf("failed to read: %v (got %d/%d bytes)", err, len(received), len(data))
+		}
+		received = append(received, readBuf[:n]...)
+	}
+
+	if len(received) != len(data) {
+		t.Fatalf("expected %d bytes, got %d", len(data), len(received))
+	}
+	for i, b := range received {
+		if b != data[i] {
+			t.Fatalf("mismatch at byte %d: expected %d, got %d", i, data[i], b)
+		}
+	}
+}
+
+func TestBidirectionalCopyConcurrent(t *testing.T) {
+	echoListener, echoAddr := startTCPEchoServer(t)
+	defer echoListener.Close()
+
+	pool := newTCPTestPool(t, echoAddr)
+	lb := newTestBalancer(t)
+	proxy := NewTCPProxy(pool, lb, slog.Default())
+
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer proxyListener.Close()
+
+	go func() {
+		for {
+			conn, err := proxyListener.Accept()
+			if err != nil {
+				return
+			}
+			go proxy.ServeTCP(conn)
+		}
+	}()
+
+	var wg sync.WaitGroup
+	numConcurrent := 50
+
+	for i := 0; i < numConcurrent; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			conn, err := net.DialTimeout("tcp", proxyListener.Addr().String(), 2*time.Second)
+			if err != nil {
+				t.Errorf("failed to connect: %v", err)
+				return
+			}
+			defer conn.Close()
+
+			msg := []byte("concurrent pool test")
+			_, err = conn.Write(msg)
+			if err != nil {
+				t.Errorf("failed to write: %v", err)
+				return
+			}
+
+			buf := make([]byte, len(msg))
+			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			n, err := conn.Read(buf)
+			if err != nil {
+				t.Errorf("failed to read: %v", err)
+				return
+			}
+			if string(buf[:n]) != string(msg) {
+				t.Errorf("expected %q, got %q", msg, buf[:n])
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
 func TestSocketProxyBidirectional(t *testing.T) {
 	dir := t.TempDir()
 	socketPath := filepath.Join(dir, "echo.sock")

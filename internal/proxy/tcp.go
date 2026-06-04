@@ -112,6 +112,15 @@ func (p *TCPProxy) ServeTCP(clientConn net.Conn) {
 	p.logger.Info("tcp proxy completed", "network", p.dialNetwork, "backend", b.RawURL, "remote_addr", clientConn.RemoteAddr())
 }
 
+// copyBufPool provides reusable 4KB buffers for BidirectionalCopy,
+// eliminating the default 2×32KB per-connection heap allocations from io.Copy.
+var copyBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 4096)
+		return &buf
+	},
+}
+
 // BidirectionalCopy performs bidirectional copy between two connections,
 // signaling EOF via CloseWrite on TCP connections when one direction finishes.
 func BidirectionalCopy(clientConn, backendConn net.Conn) {
@@ -120,7 +129,9 @@ func BidirectionalCopy(clientConn, backendConn net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		io.Copy(backendConn, clientConn)
+		bufp := copyBufPool.Get().(*[]byte)
+		defer copyBufPool.Put(bufp)
+		io.CopyBuffer(backendConn, clientConn, *bufp)
 		if tc, ok := backendConn.(*net.TCPConn); ok {
 			tc.CloseWrite()
 		}
@@ -128,7 +139,9 @@ func BidirectionalCopy(clientConn, backendConn net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		io.Copy(clientConn, backendConn)
+		bufp := copyBufPool.Get().(*[]byte)
+		defer copyBufPool.Put(bufp)
+		io.CopyBuffer(clientConn, backendConn, *bufp)
 		if tc, ok := clientConn.(*net.TCPConn); ok {
 			tc.CloseWrite()
 		}
