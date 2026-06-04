@@ -29,6 +29,7 @@ type HTTPProxy struct {
 	limiter      *ratelimit.Limiter
 	logger       *slog.Logger
 	reverseProxy *httputil.ReverseProxy
+	transport    *http.Transport
 }
 
 // NewHTTPProxy creates a new HTTP reverse proxy handler.
@@ -38,6 +39,12 @@ func NewHTTPProxy(pool *backend.Pool, bal balancer.Balancer, limiter *ratelimit.
 		balancer: bal,
 		limiter:  limiter,
 		logger:   logger,
+		transport: &http.Transport{
+			MaxIdleConns:        512,
+			MaxIdleConnsPerHost: 64,
+			IdleConnTimeout:     90 * time.Second,
+			DialContext:         (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+		},
 	}
 
 	p.reverseProxy = &httputil.ReverseProxy{
@@ -90,6 +97,8 @@ func NewHTTPProxy(pool *backend.Pool, bal balancer.Balancer, limiter *ratelimit.
 		w.Write(errBytesBadGateway)
 		},
 	}
+
+	p.reverseProxy.Transport = p.transport
 
 	return p
 }

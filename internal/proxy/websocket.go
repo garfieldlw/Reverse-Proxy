@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/garfieldlw/reverse-proxy/internal/backend"
 	"github.com/garfieldlw/reverse-proxy/internal/balancer"
@@ -20,6 +21,7 @@ type WSProxy struct {
 	limiter  *ratelimit.Limiter
 	logger   *slog.Logger
 	upgrader websocket.Upgrader
+	dialer   *websocket.Dialer
 }
 
 // NewWSProxy creates a new WebSocket reverse proxy handler.
@@ -35,6 +37,9 @@ func NewWSProxy(pool *backend.Pool, balancer balancer.Balancer, limiter *ratelim
 			CheckOrigin: func(r *http.Request) bool {
 				return true
 			},
+		},
+		dialer: &websocket.Dialer{
+			HandshakeTimeout: 10 * time.Second,
 		},
 	}
 }
@@ -79,7 +84,7 @@ func (p *WSProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	backendConn, _, err := websocket.DefaultDialer.Dial(targetURL, requestHeaders)
+	backendConn, _, err := p.dialer.Dial(targetURL, requestHeaders)
 	if err != nil {
 		p.logger.Error("ws dial backend failed", "url", targetURL, "error", err)
 		return
