@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/garfieldlw/reverse-proxy/internal/config"
@@ -19,15 +20,19 @@ const cleanupInterval = 10 * time.Minute
 // errRateLimitFmt is a format string for 429 rate limit responses.
 const errRateLimitFmt = "{\"error\":\"rate limit exceeded\",\"retry_after\":%d}\n"
 
+// ipEntry holds a per-IP rate limiter and its last access timestamp.
+type ipEntry struct {
+	limiter    *rate.Limiter
+	lastAccess atomic.Int64 // unix nanos
+}
+
 // Limiter is an HTTP middleware that performs rate limiting.
 type Limiter struct {
-	config         config.RateLimitConfig
-	globalLimiter  *rate.Limiter
-	ipLimiters     map[string]*rate.Limiter
-	ipLastAccess   map[string]time.Time
-	mu             sync.RWMutex
-	logger         *slog.Logger
-	lastCleanup    time.Time
+	config        config.RateLimitConfig
+	globalLimiter *rate.Limiter
+	ipLimiters    sync.Map // string -> *ipEntry
+	logger        *slog.Logger
+	lastCleanup   atomic.Int64 // unix nanos of last cleanup
 }
 
 // New creates a new rate limiting middleware.
@@ -41,12 +46,10 @@ func New(cfg config.RateLimitConfig, logger *slog.Logger) *Limiter {
 	}
 
 	l := &Limiter{
-		config:       cfg,
-		logger:       logger,
-		ipLimiters:   make(map[string]*rate.Limiter),
-		ipLastAccess: make(map[string]time.Time),
-		lastCleanup:  time.Now(),
+		config: cfg,
+		logger: logger,
 	}
+	l.lastCleanup.Store(time.Now().UnixNano())
 
 	if !cfg.PerIP {
 		l.globalLimiter = rate.NewLimiter(rate.Limit(cfg.RequestsPerSecond), cfg.Burst)
@@ -110,52 +113,46 @@ func (l *Limiter) extractIP(r *http.Request) string {
 
 // getIPLimiter returns the rate limiter for the given IP, creating one if needed.
 func (l *Limiter) getIPLimiter(ip string) *rate.Limiter {
-	l.mu.RLock()
-	limiter, ok := l.ipLimiters[ip]
-	l.mu.RUnlock()
-
-	if ok {
-		l.mu.Lock()
-		l.ipLastAccess[ip] = time.Now()
-		l.mu.Unlock()
-		return limiter
+	now := time.Now().UnixNano()
+	if v, ok := l.ipLimiters.Load(ip); ok {
+		entry := v.(*ipEntry)
+		entry.lastAccess.Store(now)
+		return entry.limiter
 	}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	entry := &ipEntry{
+		limiter: rate.NewLimiter(rate.Limit(l.config.RequestsPerSecond), l.config.Burst),
+	}
+	entry.lastAccess.Store(now)
 
-	// Double-check after acquiring write lock.
-	if limiter, ok = l.ipLimiters[ip]; ok {
-		l.ipLastAccess[ip] = time.Now()
-		return limiter
+	if actual, loaded := l.ipLimiters.LoadOrStore(ip, entry); loaded {
+		actual.(*ipEntry).lastAccess.Store(now)
+		return actual.(*ipEntry).limiter
 	}
 
-	limiter = rate.NewLimiter(rate.Limit(l.config.RequestsPerSecond), l.config.Burst)
-	l.ipLimiters[ip] = limiter
-	l.ipLastAccess[ip] = time.Now()
-
-	l.cleanupStaleEntries()
-
-	return limiter
+	l.maybeCleanup()
+	return entry.limiter
 }
 
 // cleanupStaleEntries removes per-IP limiters that haven't been accessed in cleanupInterval.
 // Must be called with l.mu held for writing.
-func (l *Limiter) cleanupStaleEntries() {
+func (l *Limiter) maybeCleanup() {
 	now := time.Now()
-	if now.Sub(l.lastCleanup) < cleanupInterval {
+	last := l.lastCleanup.Load()
+	if now.UnixNano()-last < int64(cleanupInterval) {
 		return
 	}
-
-	l.lastCleanup = now
-	threshold := now.Add(-cleanupInterval)
-
-	for ip, lastAccess := range l.ipLastAccess {
-		if lastAccess.Before(threshold) {
-			delete(l.ipLimiters, ip)
-			delete(l.ipLastAccess, ip)
-		}
+	if !l.lastCleanup.CompareAndSwap(last, now.UnixNano()) {
+		return // another goroutine is cleaning up
 	}
+	threshold := now.Add(-cleanupInterval).UnixNano()
+	l.ipLimiters.Range(func(key, value any) bool {
+		entry := value.(*ipEntry)
+		if entry.lastAccess.Load() < threshold {
+			l.ipLimiters.Delete(key)
+		}
+		return true
+	})
 }
 
 // writeRateLimitResponse writes a 429 Too Many Requests response.

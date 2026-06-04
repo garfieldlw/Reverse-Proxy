@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -316,4 +317,39 @@ func TestConcurrentAccess(t *testing.T) {
 			t.Errorf("concurrent access error: %v", err)
 		}
 	}
+}
+
+func TestConcurrentPerIPLimiters(t *testing.T) {
+	cfg := config.RateLimitConfig{
+		Enabled:            true,
+		RequestsPerSecond:  10000,
+		Burst:              100000,
+		PerIP:              true,
+	}
+	limiter := New(cfg, slog.Default())
+
+	okHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := limiter.Middleware(okHandler)
+
+	var wg sync.WaitGroup
+	const goroutines = 100
+	const requestsPerGoroutine = 50
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			ip := fmt.Sprintf("10.0.%d.%d:1234", idx/256, idx%256)
+			for j := 0; j < requestsPerGoroutine; j++ {
+				req := httptest.NewRequest(http.MethodGet, "/test", nil)
+				req.RemoteAddr = ip
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+			}
+		}(i)
+	}
+
+	wg.Wait()
 }
