@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -580,4 +581,201 @@ func TestSocketProxyBidirectional(t *testing.T) {
 	if string(buf[:n]) != string(msg) {
 		t.Fatalf("expected %q, got %q", msg, buf[:n])
 	}
+}
+
+func TestTCPProxyConnectionReuse(t *testing.T) {
+	echoListener, echoAddr := startTCPEchoServer(t)
+	defer echoListener.Close()
+
+	pool := newTCPTestPool(t, echoAddr)
+	lb := newTestBalancer(t)
+	proxy := NewTCPProxy(pool, lb, slog.Default())
+
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer proxyListener.Close()
+
+	go func() {
+		for {
+			conn, err := proxyListener.Accept()
+			if err != nil {
+				return
+			}
+			go proxy.ServeTCP(conn)
+		}
+	}()
+
+	// Make two sequential connections through the proxy.
+	// Both should succeed regardless of whether the backend connection is pooled or fresh.
+	for i := 0; i < 2; i++ {
+		conn, err := net.DialTimeout("tcp", proxyListener.Addr().String(), 2*time.Second)
+		if err != nil {
+			t.Fatalf("connection %d: failed to connect: %v", i, err)
+		}
+		msg := []byte("reuse test")
+		conn.Write(msg)
+		buf := make([]byte, len(msg))
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Fatalf("connection %d: failed to read: %v", i, err)
+		}
+		if string(buf[:n]) != string(msg) {
+			t.Fatalf("connection %d: expected %q, got %q", i, msg, buf[:n])
+		}
+		conn.Close()
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Verify the pool mechanism works by directly testing Get/Put.
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	globalPool.Put(echoAddr, serverConn)
+	stats := globalPool.PoolStats()
+	if stats[echoAddr] < 1 {
+		t.Errorf("expected at least 1 idle connection in pool for %s, got %d", echoAddr, stats[echoAddr])
+	}
+
+	// Get should return the connection we just put.
+	retrieved := globalPool.Get(echoAddr)
+	if retrieved == nil {
+		t.Error("expected to retrieve pooled connection, got nil")
+	} else {
+		retrieved.Close()
+	}
+	clientConn.Close()
+}
+
+func TestTCPProxyPoolIdleTimeout(t *testing.T) {
+	addr := "idle-timeout-test-addr"
+
+	// Put a connection into the pool directly using net.Pipe
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	globalPool.Put(addr, serverConn)
+
+	stats := globalPool.PoolStats()
+	if stats[addr] != 1 {
+		t.Fatalf("expected 1 idle connection, got %d", stats[addr])
+	}
+
+	// Wait for idle timeout to expire
+	time.Sleep(maxIdleAge + 1*time.Second)
+
+	// Get should discard the stale entry and return nil
+	gotConn := globalPool.Get(addr)
+	if gotConn != nil {
+		gotConn.Close()
+		t.Error("expected nil from pool after idle timeout, got a connection")
+	}
+
+	// Pool should be empty now
+	stats = globalPool.PoolStats()
+	if stats[addr] > 0 {
+		t.Errorf("expected 0 idle connections after drain, got %d", stats[addr])
+	}
+}
+
+func TestTCPProxyUnixSocketNoPooling(t *testing.T) {
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "b.sock")
+
+	echoListener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("failed to listen on unix socket: %v", err)
+	}
+	defer echoListener.Close()
+
+	go func() {
+		for {
+			conn, err := echoListener.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				io.Copy(c, c)
+			}(conn)
+		}
+	}()
+
+	u, _ := url.Parse("unix:" + socketPath)
+	pool := &backend.Pool{
+		Name:     "test-socket",
+		Balancer: "round_robin",
+		Backends: []*backend.Backend{
+			{URL: u, RawURL: "unix:" + socketPath, Weight: 1},
+		},
+	}
+
+	lb := newTestBalancer(t)
+	proxy := NewSocketProxy(pool, lb, slog.Default())
+
+	proxySocketPath := filepath.Join(dir, "p.sock")
+	proxyListener, err := net.Listen("unix", proxySocketPath)
+	if err != nil {
+		t.Fatalf("failed to listen on proxy unix socket: %v", err)
+	}
+	defer proxyListener.Close()
+	defer os.Remove(proxySocketPath)
+
+	go func() {
+		for {
+			conn, err := proxyListener.Accept()
+			if err != nil {
+				return
+			}
+			go proxy.ServeTCP(conn)
+		}
+	}()
+
+	conn, err := net.Dial("unix", proxySocketPath)
+	if err != nil {
+		t.Fatalf("failed to connect: %v", err)
+	}
+	msg := []byte("socket test")
+	conn.Write(msg)
+	buf := make([]byte, len(msg))
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("failed to read: %v", err)
+	}
+	if string(buf[:n]) != string(msg) {
+		t.Fatalf("expected %q, got %q", msg, buf[:n])
+	}
+	conn.Close()
+
+	time.Sleep(100 * time.Millisecond)
+	stats := globalPool.PoolStats()
+	if stats[socketPath] > 0 {
+		t.Errorf("expected 0 idle connections for unix socket, got %d", stats[socketPath])
+	}
+}
+
+func TestBackendConnPoolMaxIdle(t *testing.T) {
+	addr := "127.0.0.1:99999"
+
+	var conns []net.Conn
+	for i := 0; i < maxIdlePerBackend+2; i++ {
+		serverConn, clientConn := net.Pipe()
+		defer serverConn.Close()
+		defer clientConn.Close()
+		conns = append(conns, serverConn)
+	}
+
+	for _, conn := range conns {
+		globalPool.Put(addr, conn)
+	}
+
+	stats := globalPool.PoolStats()
+	if stats[addr] > maxIdlePerBackend {
+		t.Errorf("expected at most %d idle connections, got %d", maxIdlePerBackend, stats[addr])
+	}
+
+	globalPool.DrainBackend(addr)
 }
