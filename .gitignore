@@ -35,3 +35,8 @@ go.work.sum
 .opencode
 .sisyphus
 .codegraph
+
+openspec
+docs/design
+docs/superpowers
+
